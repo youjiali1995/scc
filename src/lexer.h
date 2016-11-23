@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 
+/* token type */
 enum {
     TK_KW,
     TK_ID,
@@ -12,15 +13,55 @@ enum {
     TK_PUNCT
 };
 
+/* keywords */
+enum {
+    KW_VOID,
+    KW_CHAR,
+    KW_INT,
+    KW_DOUBLE,
+    KW_FOR,
+    KW_WHILE,
+    KW_IF,
+    KW_ELSE,
+    KW_RETURN
+};
+
+/* punctuators */
+enum {
+    PUNCT_INC = 256, /* ++ */
+    PUNCT_IADD, /* += */
+    PUNCT_AND, /* && */
+    PUNCT_IAND, /* &= */
+    PUNCT_OR, /* || */
+    PUNCT_IOR, /* |= */
+
+    PUNCT_DEC, /* -- */
+    PUNCT_ISUB, /* -= */
+    PUNCT_ARROW, /* -> */
+
+    PUNCT_IMUL, /* *= */
+    PUNCT_IDIV, /* /= */
+    PUNCT_IMOD, /* %= */
+    PUNCT_EQ, /* == */
+    PUNCT_NE, /* != */
+    PUNCT_IXOR, /* ^= */
+
+    PUNCT_LE, /* <= */
+    PUNCT_LSFT, /* << */
+    PUNCT_ILSFT, /* <<= */
+    PUNCT_GE, /* >= */
+    PUNCT_RSFT, /* >> */
+    PUNCT_IRSFT, /* >>= */
+
+};
+
 typedef struct token_t {
     int type;
     union {
-        /* string and identifier */
-        char *s;
-        double d;
-        int n;
-        /* char and punctuator */
-        char c;
+        /* string, identifier and number */
+        char *sval;
+        /* char, punctuator and keyword */
+        int ival;
     };
 } token_t;
 
