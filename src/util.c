@@ -1,9 +1,9 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
-#include "error.h"
+#include "util.h"
 
-void error(char *fmt, ...)
+void errorf(const char *fmt, ...)
 {
     va_list ap;
     fprintf(stderr, "[ERROR] %s:%d: ", __FILE__, __LINE__);
