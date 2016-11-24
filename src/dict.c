@@ -4,8 +4,6 @@
 #include <string.h>
 #include "dict.h"
 
-#define DICT_INIT_SIZE 8
-
 static size_t hash(const char *s)
 {
     size_t r = 2166136261;
@@ -15,6 +13,8 @@ static size_t hash(const char *s)
     }
     return r;
 }
+
+#define DICT_INIT_SIZE 8
 
 dict_t *make_dict(void)
 {
@@ -35,7 +35,7 @@ static dict_entry_t *lookup(dict_t *dict, const char *key, size_t h)
 
     for (i = h & dict->mask; ; i = PROBE(i) & dict->mask) {
         e = &dict->table[i];
-        if (!e->key || (e->hash == h && !strcmp(e->key, key)))
+        if (!e->key || (e->hash == h && (e->key == key || !strcmp(e->key, key))))
             return e;
     }
 }
