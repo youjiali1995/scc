@@ -5,9 +5,9 @@
 
 /* token type */
 enum {
-    TK_KW,
+    TK_KEYWORD,
     TK_ID,
-    TK_NUM,
+    TK_NUMBER,
     TK_CHAR,
     TK_STRING,
     TK_PUNCT
@@ -15,7 +15,7 @@ enum {
 
 /* keywords */
 enum {
-    KW_VOID,
+    KW_VOID = 1,
     KW_CHAR,
     KW_INT,
     KW_DOUBLE,

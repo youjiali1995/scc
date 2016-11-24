@@ -1,14 +1,30 @@
 #include <stdlib.h>
 #include <assert.h>
+#include <string.h>
 #include <ctype.h>
 #include "lexer.h"
 #include "error.h"
 #include "dict.h"
+#include "buffer.h"
+
+/* buffer helper */
+#define PUTC(buffer, c) \
+    do { \
+        buffer_push(buffer, &(c), sizeof(char)); \
+    } while (0)
+
+#define SET_STRING(buffer, s) \
+    do { \
+        (s) = malloc(sizeof(char) * (buffer->top + 1)); \
+        memcpy(s, buffer->stack, buffer->top); \
+        s[buffer->top] = '\0'; \
+    } while (0)
 
 /* i/o functions */
 static int get_c(lexer_t *lexer)
 {
     int c = getc(lexer->fp);
+
     if (c == '\n') {
         lexer->line++;
         lexer->prev_column = lexer->column;
@@ -31,6 +47,7 @@ static void unget_c(int c, lexer_t *lexer)
 static int expect_c(int c, lexer_t *lexer)
 {
     int c1 = get_c(lexer);
+
     if (c1 == c)
         return 1;
     else {
@@ -39,6 +56,30 @@ static int expect_c(int c, lexer_t *lexer)
     }
 }
 
+/* type functions */
+int is_keyword(const char *s)
+{
+    static dict_t *kw;
+    int ret;
+
+    if (!kw) {
+        kw = make_dict();
+        dict_insert(kw, "void", (void *) KW_VOID, 1);
+        dict_insert(kw, "char", (void *) KW_CHAR, 1);
+        dict_insert(kw, "int", (void *) KW_INT, 1);
+        dict_insert(kw, "double", (void *) KW_DOUBLE, 1);
+        dict_insert(kw, "for", (void *) KW_FOR, 1);
+        dict_insert(kw, "while", (void *) KW_WHILE, 1);
+        dict_insert(kw, "if", (void *) KW_IF, 1);
+        dict_insert(kw, "else", (void *) KW_ELSE, 1);
+        dict_insert(kw, "return", (void *) KW_RETURN ,1);
+    }
+    /* triky */
+    ret = (long) dict_lookup(kw, s);
+    return ret ? ret : 0;
+}
+
+
 /* token constructors */
 #define NEW_TOKEN(token, tp) \
     do { \
@@ -46,9 +87,55 @@ static int expect_c(int c, lexer_t *lexer)
         (token)->type = (tp); \
     } while (0)
 
+static token_t *make_number(char *s)
+{
+    token_t *token;
+
+    NEW_TOKEN(token, TK_NUMBER);
+    token->sval = s;
+    return token;
+}
+
+static token_t *make_char(int c)
+{
+    token_t *token;
+
+    NEW_TOKEN(token, TK_CHAR);
+    token->ival = c;
+    return token;
+}
+
+static token_t *make_string(char *s)
+{
+    token_t *token;
+
+    NEW_TOKEN(token, TK_STRING);
+    token->sval = s;
+    return token;
+}
+
+static token_t *make_keyword(int type)
+{
+    token_t *token;
+
+    NEW_TOKEN(token, TK_KEYWORD);
+    token->ival = type;
+    return token;
+}
+
+static token_t *make_id(char *s)
+{
+    token_t *token;
+
+    NEW_TOKEN(token, TK_ID);
+    token->sval = s;
+    return token;
+}
+
 static token_t *make_punct(int c)
 {
     token_t *token;
+
     NEW_TOKEN(token, TK_PUNCT);
     token->ival = c;
     return token;
@@ -65,6 +152,7 @@ static token_t *make_punct_2(lexer_t *lexer, int punct_type, int expect1, int pu
 static token_t *make_punct_3(lexer_t *lexer, int punct_type, int expect1, int punct_type1, int expect2, int punct_type2)
 {
     int c = get_c(lexer);
+
     if (c == expect1)
         return make_punct(punct_type1);
     else if (c == expect2)
@@ -85,9 +173,136 @@ static void lex_whitespace(lexer_t *lexer)
     unget_c(c, lexer);
 }
 
-static token_t *lex_number(lexer_t *lexer, int c)
+static int lex_escape(int c)
 {
+    switch (c) {
+    case '\'':
+    case '\"':
+    case '\?':
+    case '\\':
+        return c;
+    case 'a':
+        return '\a';
+    case 'b':
+        return '\b';
+    case 'f':
+        return '\f';
+    case 'n':
+        return '\n';
+    case 'r':
+        return '\r';
+    case 't':
+        return '\t';
+    case 'v':
+        return '\v';
+    defualt:
+        return -1;
+    }
+}
 
+static token_t *lex_char(lexer_t *lexer)
+{
+    int c = get_c(lexer);
+
+    if (c == '\\') {
+        int temp = get_c(lexer);
+        c = lex_escape(temp);
+        if (c == -1)
+            error("unknown escape sequence: \'\\%c\' in %s:%d:%d\n", temp, lexer->fname, lexer->line, lexer->column);
+    }
+    if (get_c(lexer) != '\'')
+        error("missing terminating \' character in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+    return make_char(c);
+}
+
+static token_t *lex_string(lexer_t *lexer)
+{
+    int c;
+    char *s;
+    buffer_t *string = make_buffer();
+
+    for (c = get_c(lexer);; c = get_c(lexer))
+        switch(c) {
+        case '\"':
+            SET_STRING(string, s);
+            buffer_free(string);
+            return make_string(s);
+
+        case '\\': {
+            int temp = get_c(lexer);
+            c = lex_escape(temp);
+            if (c == -1)
+                error("unknown escape sequence \'\\%c\' in %s:%d:%d\n", temp, lexer->fname, lexer->line, lexer->column);
+            PUTC(string, c);
+            break;
+        }
+
+        default:
+            if (c == -1)
+                error("missing terminating \" character in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+            PUTC(string, c);
+            break;
+        }
+}
+
+static token_t *lex_id(lexer_t *lexer, int c)
+{
+    buffer_t *id = make_buffer();
+    char *s;
+
+    assert(isalpha(c) || c == '_');
+    PUTC(id, c);
+    for (c = get_c(lexer); isalnum(c) || c == '_'; c = get_c(lexer))
+        PUTC(id, c);
+    unget_c(c, lexer);
+
+    SET_STRING(id, s);
+    buffer_free(id);
+    c = is_keyword(s);
+    if (c)
+        return make_keyword(c);
+    else
+        return make_id(s);
+}
+
+/* Read a number literal.
+ * It only supports int and double. Different base numbers are not supported.
+ */
+static token_t *lex_number(lexer_t *lexer, char c)
+{
+    buffer_t *num = make_buffer();
+    token_t *token;
+    char *s;
+
+    assert(isdigit(c));
+    PUTC(num, c);
+    for (c = get_c(lexer); isdigit(c); c = get_c(lexer))
+        PUTC(num, c);
+    if (c == '.') {
+        PUTC(num, c);
+        c = get_c(lexer);
+        if (!isdigit(c))
+            error("expected digit after '.' in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+        for (; isdigit(c); c = get_c(lexer))
+            PUTC(num, c);
+    }
+    if (c == 'e' || c == 'E') {
+        PUTC(num, c);
+        c = get_c(lexer);
+        if (c == '-' || c == '+') {
+            PUTC(num, c);
+            c = get_c(lexer);
+        }
+        if (!isdigit(c))
+            error("expected digit after 'e' or 'E' in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+        for (; isdigit(c); c = get_c(lexer))
+            PUTC(num, c);
+    }
+    unget_c(c, lexer);
+
+    SET_STRING(num, s);
+    buffer_free(num);
+    return make_number(s);
 }
 
 /* lexer interface */
@@ -102,7 +317,6 @@ void lexer_init(lexer_t *lexer, const char *fname, FILE *fp)
     lexer->column = lexer->prev_column = 0;
     lexer->untoken = NULL;
 }
-
 
 token_t *get_token(lexer_t *lexer)
 {
@@ -195,7 +409,7 @@ token_t *get_token(lexer_t *lexer)
         else if (isalpha(c) || c == '_')
             return lex_id(lexer, c);
         else
-            error("Unknown char %c\n", c);
+            error("Unknown char %c in %s:%d:%d\n", c, lexer->fname, lexer->line, lexer->column);;
     }
 }
 
