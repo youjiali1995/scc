@@ -3,7 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "lexer.h"
-#include "error.h"
+#include "util.h"
 #include "dict.h"
 #include "buffer.h"
 
@@ -195,7 +195,7 @@ static int lex_escape(int c)
         return '\t';
     case 'v':
         return '\v';
-    defualt:
+    default:
         return -1;
     }
 }
@@ -208,10 +208,10 @@ static token_t *lex_char(lexer_t *lexer)
         int temp = get_c(lexer);
         c = lex_escape(temp);
         if (c == -1)
-            error("unknown escape sequence: \'\\%c\' in %s:%d:%d\n", temp, lexer->fname, lexer->line, lexer->column);
+            errorf("unknown escape sequence: \'\\%c\' in %s:%d:%d\n", temp, lexer->fname, lexer->line, lexer->column);
     }
     if (get_c(lexer) != '\'')
-        error("missing terminating \' character in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+        errorf("missing terminating \' character in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
     return make_char(c);
 }
 
@@ -232,14 +232,14 @@ static token_t *lex_string(lexer_t *lexer)
             int temp = get_c(lexer);
             c = lex_escape(temp);
             if (c == -1)
-                error("unknown escape sequence \'\\%c\' in %s:%d:%d\n", temp, lexer->fname, lexer->line, lexer->column);
+                errorf("unknown escape sequence \'\\%c\' in %s:%d:%d\n", temp, lexer->fname, lexer->line, lexer->column);
             PUTC(string, c);
             break;
         }
 
         default:
-            if (c == -1)
-                error("missing terminating \" character in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+            if (c == EOF)
+                errorf("missing terminating \" character in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
             PUTC(string, c);
             break;
         }
@@ -271,7 +271,6 @@ static token_t *lex_id(lexer_t *lexer, int c)
 static token_t *lex_number(lexer_t *lexer, char c)
 {
     buffer_t *num = make_buffer();
-    token_t *token;
     char *s;
 
     assert(isdigit(c));
@@ -282,7 +281,7 @@ static token_t *lex_number(lexer_t *lexer, char c)
         PUTC(num, c);
         c = get_c(lexer);
         if (!isdigit(c))
-            error("expected digit after '.' in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+            errorf("expected digit after '.' in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
         for (; isdigit(c); c = get_c(lexer))
             PUTC(num, c);
     }
@@ -294,7 +293,7 @@ static token_t *lex_number(lexer_t *lexer, char c)
             c = get_c(lexer);
         }
         if (!isdigit(c))
-            error("expected digit after 'e' or 'E' in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
+            errorf("expected digit after 'e' or 'E' in %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
         for (; isdigit(c); c = get_c(lexer))
             PUTC(num, c);
     }
@@ -311,8 +310,8 @@ void lexer_init(lexer_t *lexer, const char *fname, FILE *fp)
     assert(lexer && (fname || fp));
     lexer->fp = fp ? fp : fopen(fname, "r");
     if (!lexer->fp)
-        error("Can't open file %s\n", fname);
-    lexer->fname = fname;
+        errorf("Can't open file %s\n", fname);
+    lexer->fname = fname ? fname : "stdin";
     lexer->line = 1;
     lexer->column = lexer->prev_column = 0;
     lexer->untoken = NULL;
@@ -408,8 +407,12 @@ token_t *get_token(lexer_t *lexer)
             return lex_number(lexer, c);
         else if (isalpha(c) || c == '_')
             return lex_id(lexer, c);
-        else
-            error("Unknown char %c in %s:%d:%d\n", c, lexer->fname, lexer->line, lexer->column);;
+        else if (c == EOF)
+            return NULL;
+        else {
+            errorf("Unknown char %c in %s:%d:%d\n", c, lexer->fname, lexer->line, lexer->column);
+            return NULL;
+        }
     }
 }
 
