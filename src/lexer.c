@@ -2,7 +2,6 @@
 #include <assert.h>
 #include <string.h>
 #include <ctype.h>
-#include <stdbool.h>
 #include "lexer.h"
 #include "util.h"
 #include "dict.h"
@@ -310,11 +309,11 @@ static token_t *lex_number(lexer_t *lexer, char c)
 /* lexer interface */
 void lexer_init(lexer_t *lexer, const char *fname, FILE *fp)
 {
-    assert(lexer && (fname || fp));
+    assert(lexer && fname);
     lexer->fp = fp ? fp : fopen(fname, "r");
     if (!lexer->fp)
         errorf("Can't open file %s\n", fname);
-    lexer->fname = fname ? fname : "stdin";
+    lexer->fname = fname;
     lexer->line = 1;
     lexer->column = lexer->prev_column = 0;
     lexer->untoken = NULL;
@@ -435,7 +434,7 @@ token_t *peek_token(lexer_t *lexer)
     return lexer->untoken;
 }
 
-void free_token(token_t *token, int free_sval)
+void free_token(token_t *token, bool free_sval)
 {
     assert(token);
     if ((token->type == TK_ID || token->type == TK_NUMBER || token->type == TK_STRING)

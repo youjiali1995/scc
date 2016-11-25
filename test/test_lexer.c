@@ -19,7 +19,7 @@ int main(void)
         "return"
     };
 
-    lexer_init(&lexer, NULL, stdin);
+    lexer_init(&lexer, "stdin", stdin);
     for (token = get_token(&lexer); token; token = get_token(&lexer))
         switch (token->type) {
         case TK_KEYWORD:
