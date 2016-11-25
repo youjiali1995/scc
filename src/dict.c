@@ -1,6 +1,5 @@
 #include <stdlib.h>
 #include <assert.h>
-#include <stddef.h>
 #include <string.h>
 #include "dict.h"
 
@@ -66,7 +65,7 @@ static void dict_resize(dict_t *dict, size_t new_size)
     free(old);
 }
 
-int dict_insert(dict_t *dict, char *key, void *val, int flag)
+bool dict_insert(dict_t *dict, char *key, void *val, bool flag)
 {
     dict_entry_t *e;
     size_t h;
@@ -81,14 +80,14 @@ int dict_insert(dict_t *dict, char *key, void *val, int flag)
         dict->used++;
     } else {
         if (flag)
-            return 0;
+            return false;
         else
             e->val = val;
     }
 
     if (dict->used * 3 >= (dict->mask + 1) * 2)
         dict_resize(dict, (dict->mask + 1) * 2);
-    return 1;
+    return true;
 }
 
 void free_dict(dict_t *dict, void (*free_key)(char *), void (*free_val)(void *))

@@ -2,6 +2,7 @@
 #define DICT_H__
 
 #include <stddef.h> /* for size_t */
+#include <stdbool.h>
 
 typedef struct dict_entry_t {
     size_t hash;
@@ -18,11 +19,11 @@ typedef struct dict_t {
 
 dict_t *make_dict(void);
 void *dict_lookup(dict_t *dict, const char *key);
-/* flag == 1: insert if key is not in dict, if key is in dict, return 0
- * flag == 0: insert no matter whether key is in dict
- * succecc return 1
+/* flag == true: insert if key is not in dict, if key is in dict, return false
+ * flag == false: insert no matter whether key is in dict
+ * succecc return true
  */
-int dict_insert(dict_t *dict, char *key, void *val, int flag);
+bool dict_insert(dict_t *dict, char *key, void *val, bool flag);
 void free_dict(dict_t *dict, void (*free_key)(char *), void (*free_val)(void *));
 
 #endif
