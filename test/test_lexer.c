@@ -24,22 +24,27 @@ int main(void)
         switch (token->type) {
         case TK_KEYWORD:
             printf("type: keyword, val: %s\n", kw[token->ival]);
+            free_token(token, 0);
             break;
 
         case TK_ID:
             printf("type: identifier, val: %s\n", token->sval);
+            free_token(token, 1);
             break;
 
         case TK_NUMBER:
             printf("type: number, val: %s\n", token->sval);
+            free_token(token, 1);
             break;
 
         case TK_CHAR:
             printf("type: character, val: %c\n", token->ival);
+            free_token(token, 0);
             break;
 
         case TK_STRING:
             printf("type: string, val: %s\n", token->sval);
+            free_token(token, 1);
             break;
 
         case TK_PUNCT:
@@ -48,6 +53,7 @@ int main(void)
                 printf("%c\n", token->ival);
             else
                 printf("%d\n", token->ival);
+            free_token(token, 0);
             break;
 
         default:

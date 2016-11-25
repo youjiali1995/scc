@@ -12,6 +12,6 @@ typedef struct buffer_t {
 buffer_t *make_buffer(void);
 void buffer_push(buffer_t *buffer, const void *v, size_t size);
 void *buffer_pop(buffer_t *buffer, size_t size);
-void buffer_free(buffer_t *buffer);
+void free_buffer(buffer_t *buffer);
 
 #endif

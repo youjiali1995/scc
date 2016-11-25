@@ -31,10 +31,9 @@ void *buffer_pop(buffer_t *buffer, size_t size)
     return buffer->stack + buffer->top;
 }
 
-void buffer_free(buffer_t *buffer)
+void free_buffer(buffer_t *buffer)
 {
-    if (buffer) {
-        free(buffer->stack);
-        free(buffer);
-    }
+    assert(buffer);
+    free(buffer->stack);
+    free(buffer);
 }

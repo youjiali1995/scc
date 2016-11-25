@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdbool.h>
 #include "lexer.h"
 #include "util.h"
 #include "dict.h"
@@ -44,22 +45,23 @@ static void unget_c(int c, lexer_t *lexer)
     ungetc(c, lexer->fp);
 }
 
-static int expect_c(int c, lexer_t *lexer)
+static bool expect_c(int c, lexer_t *lexer)
 {
     int c1 = get_c(lexer);
 
     if (c1 == c)
-        return 1;
+        return true;
     else {
         unget_c(c1, lexer);
-        return 0;
+        return false;
     }
 }
+
+static dict_t *kw;
 
 /* type functions */
 int is_keyword(const char *s)
 {
-    static dict_t *kw;
     int ret;
 
     if (!kw) {
@@ -225,7 +227,7 @@ static token_t *lex_string(lexer_t *lexer)
         switch(c) {
         case '\"':
             SET_STRING(string, s);
-            buffer_free(string);
+            free_buffer(string);
             return make_string(s);
 
         case '\\': {
@@ -257,11 +259,12 @@ static token_t *lex_id(lexer_t *lexer, int c)
     unget_c(c, lexer);
 
     SET_STRING(id, s);
-    buffer_free(id);
+    free_buffer(id);
     c = is_keyword(s);
-    if (c)
+    if (c) {
+        free(s);
         return make_keyword(c);
-    else
+    } else
         return make_id(s);
 }
 
@@ -300,7 +303,7 @@ static token_t *lex_number(lexer_t *lexer, char c)
     unget_c(c, lexer);
 
     SET_STRING(num, s);
-    buffer_free(num);
+    free_buffer(num);
     return make_number(s);
 }
 
@@ -321,6 +324,7 @@ token_t *get_token(lexer_t *lexer)
 {
     int c;
 
+    assert(lexer);
     if (lexer->untoken) {
         token_t *temp = lexer->untoken;
         lexer->untoken = NULL;
@@ -407,12 +411,35 @@ token_t *get_token(lexer_t *lexer)
             return lex_number(lexer, c);
         else if (isalpha(c) || c == '_')
             return lex_id(lexer, c);
-        else if (c == EOF)
+        else if (c == EOF) {
+            free_dict(kw, NULL, NULL);
             return NULL;
-        else {
+        } else {
             errorf("Unknown char %c in %s:%d:%d\n", c, lexer->fname, lexer->line, lexer->column);
             return NULL;
         }
     }
 }
 
+void unget_token(token_t *token, lexer_t *lexer)
+{
+    assert(lexer && !lexer->untoken);
+    lexer->untoken = token;
+}
+
+token_t *peek_token(lexer_t *lexer)
+{
+    assert(lexer);
+    if (!lexer->untoken)
+        lexer->untoken = get_token(lexer);
+    return lexer->untoken;
+}
+
+void free_token(token_t *token, int free_sval)
+{
+    assert(token);
+    if ((token->type == TK_ID || token->type == TK_NUMBER || token->type == TK_STRING)
+            && free_sval)
+        free(token->sval);
+    free(token);
+}

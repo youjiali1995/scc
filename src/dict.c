@@ -63,6 +63,7 @@ static void dict_resize(dict_t *dict, size_t new_size)
             i--;
         }
     }
+    free(old);
 }
 
 int dict_insert(dict_t *dict, char *key, void *val, int flag)
@@ -90,7 +91,7 @@ int dict_insert(dict_t *dict, char *key, void *val, int flag)
     return 1;
 }
 
-void dict_free(dict_t *dict, void (*free_key)(char *), void (*free_val)(void *))
+void free_dict(dict_t *dict, void (*free_key)(char *), void (*free_val)(void *))
 {
     dict_entry_t *e;
 

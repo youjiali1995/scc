@@ -79,6 +79,7 @@ void lexer_init(lexer_t *lexer, const char *fname, FILE *fp);
 token_t *get_token(lexer_t *lexer);
 void unget_token(token_t *token, lexer_t *lexer);
 token_t *peek_token(lexer_t *lexer);
+void free_token(token_t *token, int free_sval);
 
 #endif
 

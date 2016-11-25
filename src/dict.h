@@ -23,6 +23,6 @@ void *dict_lookup(dict_t *dict, const char *key);
  * succecc return 1
  */
 int dict_insert(dict_t *dict, char *key, void *val, int flag);
-void dict_free(dict_t *dict, void (*free_key)(char *), void (*free_val)(void *));
+void free_dict(dict_t *dict, void (*free_key)(char *), void (*free_val)(void *));
 
 #endif
