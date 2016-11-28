@@ -64,7 +64,7 @@ int is_keyword(const char *s)
     int ret;
 
     if (!kw) {
-        kw = make_dict();
+        kw = make_dict(NULL);
         dict_insert(kw, "void", (void *) KW_VOID, 1);
         dict_insert(kw, "char", (void *) KW_CHAR, 1);
         dict_insert(kw, "int", (void *) KW_INT, 1);

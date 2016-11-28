@@ -17,7 +17,7 @@ typedef struct dict_t {
     dict_entry_t *table;
 } dict_t;
 
-dict_t *make_dict(void);
+dict_t *make_dict(dict_t *link);
 void *dict_lookup(dict_t *dict, const char *key);
 /* flag == true: insert if key is not in dict, if key is in dict, return false
  * flag == false: insert no matter whether key is in dict

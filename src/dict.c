@@ -15,10 +15,10 @@ static size_t hash(const char *s)
 
 #define DICT_INIT_SIZE 8
 
-dict_t *make_dict(void)
+dict_t *make_dict(dict_t *link)
 {
     dict_t *dict = malloc(sizeof(*dict));
-    dict->link = NULL;
+    dict->link = link;
     dict->used = 0;
     dict->mask = DICT_INIT_SIZE - 1;
     dict->table = calloc(DICT_INIT_SIZE, sizeof(dict_entry_t));
