@@ -3,6 +3,7 @@
 
 #include "lexer.h"
 #include "vector.h"
+#include "dict.h"
 
 enum {
     CTYPE_VOID,
@@ -26,8 +27,11 @@ enum {
     NODE_IF,
     NODE_FOR,
     NODE_WHILE,
-    NODE_FUNC_DECL,
-    NODE_FUNC_CALL
+    NODE_FUNC_DEF,
+    NODE_FUNC_CALL,
+    NODE_DECL,
+    NODE_INIT,
+    NODE_COMPOUND_STMT
 };
 
 typedef struct node_t {
@@ -92,6 +96,8 @@ typedef struct node_t {
             struct node_t *while_cond;
             struct node_t *while_body;
         };
+        /* compound statements */
+        vector_t *stmts;
         /* return */
         struct node_t ret;
     }
@@ -99,9 +105,11 @@ typedef struct node_t {
 
 typedef struct parser_t {
     lexer_t *lexer;
+    /* current env */
+    dict_t *env;
 } parser_t;
 
 void parser_init(parser_t *parser, lexer_t *lexer);
-node_t *get_ast(parser_t *parser);
+node_t *get_node(parser_t *parser);
 
 #endif
