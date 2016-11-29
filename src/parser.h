@@ -22,8 +22,11 @@ extern ctype_t *ctype_char;
 extern ctype_t *ctype_int;
 
 enum {
+    NODE_CONSTANT,
+    NODE_STRING,
     NODE_UNARY,
     NODE_BINARY,
+    NODE_TERNARY, /* ? : */
     NODE_IF,
     NODE_FOR,
     NODE_WHILE,
@@ -31,7 +34,7 @@ enum {
     NODE_FUNC_CALL,
     NODE_DECL,
     NODE_INIT,
-    NODE_COMPOUND_STMT
+    NODE_COMPOUND_STMT,
 };
 
 typedef struct node_t {
@@ -39,7 +42,7 @@ typedef struct node_t {
     ctype_t *ctype;
     union {
         /* int */
-        int ival;
+        long ival;
         /* double */
         double dval;
         /* string */
@@ -78,11 +81,11 @@ typedef struct node_t {
             /* function call */
             vector_t *params;
         };
-        /* if */
+        /* if or ternary ? : */
         struct {
-            struct node_t *if_cond;
-            struct node_t *if_then;
-            struct node_t *if_else;
+            struct node_t *cond;
+            struct node_t *then;
+            struct node_t *els;
         };
         /* for */
         struct {
@@ -99,8 +102,8 @@ typedef struct node_t {
         /* compound statements */
         vector_t *stmts;
         /* return */
-        struct node_t ret;
-    }
+        struct node_t *ret;
+    };
 } node_t;
 
 typedef struct parser_t {
