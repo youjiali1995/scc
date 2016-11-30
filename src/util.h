@@ -1,6 +1,8 @@
 #ifndef UTIL_H__
 #define UTIL_H__
 
-void errorf(const char *fmt, ...);
+#define errorf(fmt, ...) _errorf(__FILE__, __LINE__, fmt, ##__VA_ARGS__)
+
+void _errorf(char *file, int line, const char *fmt, ...);
 
 #endif
