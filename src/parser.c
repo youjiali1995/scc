@@ -5,7 +5,7 @@
 #include "util.h"
 
 ctype_t *ctype_void = &(ctype_t){CTYPE_VOID, 0};
-ctype_t *cypte_char = &(ctype_t){CTYPE_CHAR, 1};
+ctype_t *ctype_char = &(ctype_t){CTYPE_CHAR, 1};
 ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
 
 #define NEXT() (get_token(parser->lexer))
@@ -57,6 +57,30 @@ static bool is_type(token_t *token)
     }
 }
 
+static bool is_assign_op(token_t *token)
+{
+    if (token->type != TK_PUNCT)
+        return false;
+    switch (token->ival) {
+    case '=':
+    case PUNCT_IMUL:
+    case PUNCT_IDIV:
+    case PUNCT_IMOD:
+    case PUNCT_IADD:
+    case PUNCT_ISUB:
+    case PUNCT_ILSFT:
+    case PUNCT_IRSFT:
+    case PUNCT_IAND:
+    case PUNCT_IXOR:
+    case PUNCT_IOR:
+        return true;
+
+    default:
+        return false;
+    }
+    return false;
+}
+
 /*************************** node constructors **********************************/
 #define NEW_NODE(node, tp) \
     do { \
@@ -71,6 +95,7 @@ static node_t *make_decl_var(ctype_t *ctype, char *varname)
     NEW_NODE(node, NODE_DECL);
     node->ctype = ctype;
     node->varname = varname;
+    return node;
 }
 
 static node_t *make_compound_stmt(vector_t *stmts)
@@ -90,6 +115,7 @@ static node_t *make_unary(ctype_t *ctype, int op, node_t *operand)
     node->ctype = ctype;
     node->unary_op = op;
     node->operand = operand;
+    return node;
 }
 
 static node_t *make_binary(ctype_t *ctype, int op, node_t *left, node_t *right)
@@ -136,10 +162,54 @@ static node_t *make_string(char *s)
     return node;
 }
 
+static node_t *make_if(node_t *cond, node_t *then, node_t *els)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_IF);
+    node->cond = cond;
+    node->then = then;
+    node->els = els;
+    return node;
+}
+
+static node_t *make_for(node_t *init, node_t *cond, node_t *step, node_t *body)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_FOR);
+    node->for_init = init;
+    node->for_cond = cond;
+    node->for_step = step;
+    node->for_body = body;
+    return node;
+}
+
+static node_t *make_while(node_t *cond, node_t *body)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_WHILE);
+    node->while_cond = cond;
+    node->while_body = body;
+    return node;
+}
+
+static node_t *make_return(ctype_t *ctype, node_t *ret)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_RETURN);
+    node->ctype = ctype;
+    node->ret = ret;
+    return node;
+}
+
 /* parse functions */
 
 static node_t *parse_expr(parser_t *parser);
 static node_t *parse_cast_expr(parser_t *parser);
+static node_t *parse_assign_expr(parser_t *parser);
 
 /************************************* Expressions ****************************************/
 
@@ -182,6 +252,7 @@ static node_t *parse_primary_expr(parser_t *parser)
         /* TODO */
         return make_string(token->sval);
     }
+    return NULL;
 }
 
 /* postfix-expression:
@@ -211,10 +282,16 @@ static node_t *parse_postfix_expr(parser_t *parser)
             /* TODO */
             break;
 
-        case '(':
+        case '(': {
             /* TODO */
-            break;
-
+            vector_t *params = make_vector();
+            node_t *param = parse_assign_expr(parser);
+            vector_append(params, param);
+            EXPECT_PUNCT(')');
+            post->type = NODE_FUNC_CALL;
+            post->params = params;
+            return post;
+        }
         case '.':
             /* TODO */
             break;
@@ -228,6 +305,8 @@ static node_t *parse_postfix_expr(parser_t *parser)
             /* TODO */
             return make_unary(ctype_int, token->ival, post);
         }
+    UNGET(token);
+    return post;
 }
 
 /* unary-expression:
@@ -261,6 +340,7 @@ static node_t *parse_unary_expr(parser_t *parser)
     }
 
     /* TODO: sizeof */
+    UNGET(token);
     return parse_postfix_expr(parser);
 }
 
@@ -492,7 +572,22 @@ static node_t *parse_cond_expr(parser_t *parser)
  */
 static node_t *parse_assign_expr(parser_t *parser)
 {
+    node_t *node;
+    node_t *assign;
+    token_t *token;
 
+    node = parse_cond_expr(parser);
+    if (node->type == NODE_BINARY || node->type == NODE_TERNARY)
+        return node;
+    token = NEXT();
+    if (!is_assign_op(token)) {
+        UNGET(token);
+        return node;
+    }
+    assign = parse_assign_expr(parser);
+    if (!assign)
+        errorf("TODO\n");
+    return make_binary(NULL, token->ival, node, assign);
 }
 
 /* expression:
@@ -536,6 +631,7 @@ static ctype_t *parse_decl_spec(parser_t *parser)
     default:
         errorf("expected type specifiers\n");
     }
+    return NULL;
 }
 
 /* direct-declarator:
@@ -624,33 +720,127 @@ static node_t *parse_init_decl_list(parser_t *parser, ctype_t *ctype)
 static node_t *parse_decl(parser_t *parser)
 {
     ctype_t *ctype;
-    token_t *token;
     node_t *node;
 
     ctype = parse_decl_spec(parser);
     node = parse_init_decl_list(parser, ctype);
+    dict_insert(parser->env, node->varname, node, true);
     EXPECT_PUNCT(';');
     return node;
 }
 
 /********************************* Statements ****************************************/
+static node_t *parse_stmt(parser_t *parser);
+
+/* selection-statement:
+ *      if ( expression ) statement
+ *      if ( expression ) statement else statement
+ *      switch ( expression ) statement
+ */
 static node_t *parse_if_stmt(parser_t *parser)
 {
+    node_t *cond;
+    node_t *then;
+    node_t *els = NULL;
+
+    EXPECT_PUNCT('(');
+    cond = parse_expr(parser);
+    if (!cond)
+        errorf("TODO\n");
+    EXPECT_PUNCT(')');
+    then = parse_stmt(parser);
+    if (!then)
+        errorf("TODO\n");
+    if (TRY_KW(KW_ELSE))
+        els = parse_stmt(parser);
+    return make_if(cond, then, els);
 }
 
 static node_t *parse_for_stmt(parser_t *parser)
 {
+    node_t *init, *cond, *step, *body;
+
+    EXPECT_PUNCT('(');
+    if (TRY_PUNCT(';'))
+        init = NULL;
+    else {
+        init = parse_expr(parser);
+        EXPECT_PUNCT(';');
+    }
+    if (TRY_PUNCT(';'))
+        cond = NULL;
+    else {
+        cond = parse_expr(parser);
+        EXPECT_PUNCT(';');
+    }
+    if (TRY_PUNCT(')'))
+        step = NULL;
+    else {
+        step = parse_expr(parser);
+        EXPECT_PUNCT(')');
+    }
+    body = parse_stmt(parser);
+    if (!body)
+        errorf("TODO\n");
+    return make_for(init, cond, step, body);
 }
 
 static node_t *parse_while_stmt(parser_t *parser)
 {
+    node_t *cond;
+    node_t *body;
+
+    EXPECT_PUNCT('(');
+    cond = parse_expr(parser);
+    EXPECT_PUNCT(')');
+    body = parse_stmt(parser);
+    return make_while(cond, body);
 }
 
-static node_t *parse_compound_stmt(parser_t *parser);
+/* block-item:
+ *      declaration
+ *      statement
+ */
+static node_t *parse_block_item(parser_t *parser)
+{
+    if (is_type(PEEK()))
+        return parse_decl(parser);
+    else
+        return parse_stmt(parser);
+}
 
+/* compound-statement:
+ *      { block-item-list-opt }
+ */
+static node_t *parse_compound_stmt(parser_t *parser)
+{
+    vector_t *stmts = make_vector();
+
+    for (;;) {
+        if (TRY_PUNCT('}'))
+            break;
+        vector_append(stmts, parse_block_item(parser));
+    }
+    if (!vector_len(stmts)) {
+        free_vector(stmts, NULL);
+        stmts = NULL;
+    }
+    return make_compound_stmt(stmts);
+}
+
+/* statement:
+ *      labeled-statement
+ *      compound-statement
+ *      expression-statement
+ *      selection-statement
+ *      iteration-statement
+ *      jump-statement
+ */
 static node_t *parse_stmt(parser_t *parser)
 {
+    node_t *stmt;
     token_t *token = NEXT();
+
     if (token->type == TK_KEYWORD || token->type == TK_PUNCT)
         switch (token->ival) {
         case '{':
@@ -661,54 +851,66 @@ static node_t *parse_stmt(parser_t *parser)
             return parse_while_stmt(parser);
         case KW_IF:
             return parse_if_stmt(parser);
+        case KW_RETURN:
+            if (TRY_PUNCT(';'))
+                return make_return(NULL, NULL);
+            stmt = make_return(NULL, parse_expr(parser));
+            EXPECT_PUNCT(';');
+            return stmt;
         default:
             errorf("unexpected keyword %d\n", token->ival);
         }
-    if (TRY_PUNCT(';'))
+    if (is_punct(token, ';'))
         return NULL;
-    return parse_expr(parser);
+    UNGET(token);
+    stmt = parse_expr(parser);
+    EXPECT_PUNCT(';');
+    return stmt;
 }
 
-static node_t *parse_block_item(parser_t *parser)
-{
-    if (is_type(PEEK()))
-        return parse_decl(parser);
-    else
-        return parse_stmt(parser);
-}
+/********************* External definitions ***********************/
 
-static node_t *parse_compound_stmt(parser_t *parser)
-{
-    vector_t *stmts = make_vector();
-
-    for (;;) {
-        if (TRY_PUNCT('}'))
-            break;
-        vector_append(stmts, parse_block_item(parser));
-    }
-    return make_compound_stmt(stmts);
-}
-
-
-/*
+/* function-definition:
+ *      declaration-specifiers declarator declaration-list-opt compound-statement
+ */
 static node_t *parse_func_def(parser_t *parser)
 {
-    ctype_t *func_type;
-    node_t *func = malloc(sizeof(*func));
-    dict_t *local_env = make_dict(parser->env);
+    dict_t *local_env;
+    node_t *func;
 
+    NEW_NODE(func, NODE_FUNC_DEF);
     func->ctype = parse_decl_spec(parser);
     func->func_name = NEXT()->sval;
-    func->param_types = NULL;
+    EXPECT_PUNCT('(');
+    while (!is_punct(NEXT(), ')'))
+        ;
+    func->param_types = func->local_vars = NULL;
     EXPECT_PUNCT('{');
     func->func_body = parse_compound_stmt(parser);
     return func;
 }
-*/
 
 node_t *get_node(parser_t *parser)
 {
-    return parse_decl(parser);
+    if (!PEEK())
+        return NULL;
+    return parse_func_def(parser);
+}
+
+static void builtin_init(dict_t *env)
+{
+    node_t *func_puts;
+
+    NEW_NODE(func_puts, NODE_FUNC_DEF);
+    func_puts->ctype = ctype_int;
+    func_puts->func_name = "puts";
+    func_puts->param_types = make_vector();
+    vector_append(func_puts->param_types, ctype_char);
+    func_puts->local_vars = NULL;
+    func_puts->func_body = NULL;
+    func_puts->params = NULL;
+
+    dict_insert(env, "puts", func_puts, true);
 }
 
 void parser_init(parser_t *parser, lexer_t *lexer)
@@ -716,6 +918,8 @@ void parser_init(parser_t *parser, lexer_t *lexer)
     assert(parser && lexer);
     parser->lexer = lexer;
     parser->env = make_dict(NULL);
+
+    builtin_init(parser->env);
 }
 
 

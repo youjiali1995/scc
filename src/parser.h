@@ -35,6 +35,7 @@ enum {
     NODE_DECL,
     NODE_INIT,
     NODE_COMPOUND_STMT,
+    NODE_RETURN
 };
 
 typedef struct node_t {
