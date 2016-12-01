@@ -44,8 +44,13 @@ void *dict_lookup(dict_t *dict, const char *key)
     dict_entry_t *e;
 
     assert(dict && key);
-    e = lookup(dict, key, hash(key));
-    return e->key ? e->val : NULL;
+    while (dict) {
+        e = lookup(dict, key, hash(key));
+        if (e->key)
+            return e->val;
+        dict = dict->link;
+    }
+    return NULL;
 }
 
 static void dict_resize(dict_t *dict, size_t new_size)
