@@ -15,6 +15,11 @@ enum {
 typedef struct ctype_t {
     int type;
     int size;
+    /* pointer to */
+    struct ctype_t *ptr;
+    /* function */
+    struct ctype_t *ret;
+    vector_t *params;
 } ctype_t;
 
 extern ctype_t *ctype_void;
@@ -30,9 +35,10 @@ enum {
     NODE_IF,
     NODE_FOR,
     NODE_WHILE,
+    NODE_FUNC_DECL,
     NODE_FUNC_DEF,
     NODE_FUNC_CALL,
-    NODE_DECL,
+    NODE_VAR_DECL,
     NODE_INIT,
     NODE_COMPOUND_STMT,
     NODE_RETURN
@@ -76,11 +82,10 @@ typedef struct node_t {
         struct {
             char *func_name;
             /* function declaration */
-            vector_t *param_types;
-            vector_t *local_vars;
+            vector_t *params; /* save parameters for env */
             struct node_t *func_body;
             /* function call */
-            vector_t *params;
+            vector_t *args;
         };
         /* if or ternary ? : */
         struct {
@@ -111,6 +116,8 @@ typedef struct parser_t {
     lexer_t *lexer;
     /* current env */
     dict_t *env;
+    /* current func return type for parse_return_stmt */
+    ctype_t *ret;
 } parser_t;
 
 void parser_init(parser_t *parser, lexer_t *lexer);

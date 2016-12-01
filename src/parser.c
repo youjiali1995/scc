@@ -8,6 +8,11 @@ ctype_t *ctype_void = &(ctype_t){CTYPE_VOID, 0};
 ctype_t *ctype_char = &(ctype_t){CTYPE_CHAR, 1};
 ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
 
+/* I'm lazy */
+#define _FILE_ parser->lexer->fname
+#define _LINE_ parser->lexer->line
+
+/* i/o functions */
 #define NEXT() (get_token(parser->lexer))
 #define PEEK() (peek_token(parser->lexer))
 #define UNGET(token) (unget_token(token, parser->lexer))
@@ -28,6 +33,7 @@ ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
 #define TRY_KW(keyword) \
     (is_keyword(PEEK(), keyword) ? (NEXT(), true) : false)
 
+/* type check functions */
 static bool is_punct(token_t *token, int punct)
 {
     if (token->type == TK_PUNCT && token->ival == punct)
@@ -81,6 +87,32 @@ static bool is_assign_op(token_t *token)
     return false;
 }
 
+bool is_same_type(ctype_t *t, ctype_t *p)
+{
+    if (t == p)
+        return true;
+    if (t->type == p->type && t->size == p->size && is_same_type(t->ptr, p->ptr))
+        return true;
+    return false;
+}
+
+/************************** type constructors *************************/
+#define NEW_TYPE(ctype, tp, sz) \
+    do { \
+        (ctype) = calloc(1, sizeof(*ctype)); \
+        (ctype)->type = (tp); \
+        (ctype)->size = (sz); \
+    } while (0)
+
+static ctype_t *make_ptr(ctype_t *p)
+{
+    ctype_t *ctype;
+
+    NEW_TYPE(ctype, CTYPE_PTR, 8);
+    ctype->ptr = p;
+    return ctype;
+}
+
 /*************************** node constructors **********************************/
 #define NEW_NODE(node, tp) \
     do { \
@@ -92,7 +124,7 @@ static node_t *make_decl_var(ctype_t *ctype, char *varname)
 {
     node_t *node;
 
-    NEW_NODE(node, NODE_DECL);
+    NEW_NODE(node, NODE_VAR_DECL);
     node->ctype = ctype;
     node->varname = varname;
     return node;
@@ -634,6 +666,28 @@ static ctype_t *parse_decl_spec(parser_t *parser)
     return NULL;
 }
 
+/* parameter-list:
+ *      parameter-declaration
+ *      parameter-list , parameter-declaration
+ */
+static vector_t *parse_param_list(parser_t *parser)
+{
+    vector_t *params;
+    token_t *token;
+
+    token = NEXT();
+    if (is_keyword(token, KW_VOID) && is_punct(PEEK(), ')'))
+        return NULL;
+    UNGET(token);
+    params = make_vector();
+    do {
+        ctype_t *ctype = parse_decl_spec(parser);
+        node_t *node = parse_declarator(parser, ctype);
+        vector_append(params, node);
+    } while (TRY_PUNCT(','));
+    return params;
+}
+
 /* direct-declarator:
  *      identifier
  *      ( declarator )
@@ -648,14 +702,26 @@ static ctype_t *parse_decl_spec(parser_t *parser)
 static node_t *parse_direct_decl(parser_t *parser, ctype_t *ctype)
 {
     node_t *decl;
+    token_t *token;
 
     if (TRY_PUNCT('(')) {
         decl = parse_declarator(parser, ctype);
         EXPECT_PUNCT(')');
+    } else if ((token = NEXT())->type != TK_ID)
+        errorf("expected identifier\n");
+    if (TRY_PUNCT('(')) {
+        size_t i;
+        decl = calloc(1, sizeof(*decl));
+        decl->type = NODE_FUNC_DECL;
+        decl->func_name = token->sval;
+        decl->params = parse_param_list(parser);
+        decl->ctype = make_ptr(NULL);
+        decl->ctype->ret = ctype;
+        decl->ctype->params = make_vector();
+        for (i = 0; i < vector_len(decl->params); i++)
+            vector_append(decl->ctype->params, ((node_t *) vector_get(decl->params, i))->ctype);
+        EXPECT_PUNCT(')');
     } else {
-        token_t *token = NEXT();
-        if (token->type != TK_ID)
-            errorf("expcetd identifier\n");
         decl = make_decl_var(ctype, token->sval);
     }
     return decl;
@@ -666,9 +732,22 @@ static node_t *parse_direct_decl(parser_t *parser, ctype_t *ctype)
  */
 static node_t *parse_declarator(parser_t *parser, ctype_t *ctype)
 {
-    while (TRY_PUNCT('*'))
+    int n;
+    node_t *node;
+
+    for (n = 0; TRY_PUNCT('*'); n++)
         ;
-    return parse_direct_decl(parser, ctype);
+    node = parse_direct_decl(parser, ctype);
+    ctype = node->type == NODE_VAR_DECL ? node->ctype : node->ctype->ret;
+    while (n-- > 0)
+        ctype = make_ptr(ctype);
+    if (node->type == NODE_VAR_DECL) {
+        if (ctype == ctype_void)
+            errorf("variable \'%s\' declared void in %s:%d\n", node->varname, _FILE_, _LINE_);
+        node->ctype = ctype;
+    } else
+        node->ctype->ret = ctype;
+    return node;
 }
 
 /* initializer:
@@ -724,7 +803,10 @@ static node_t *parse_decl(parser_t *parser)
 
     ctype = parse_decl_spec(parser);
     node = parse_init_decl_list(parser, ctype);
-    dict_insert(parser->env, node->varname, node, true);
+    if (node->type == NODE_VAR_DECL)
+        dict_insert(parser->env, node->varname, node, true);
+    else
+        dict_insert(parser->env, node->func_name, node, true);
     EXPECT_PUNCT(';');
     return node;
 }
@@ -735,7 +817,6 @@ static node_t *parse_stmt(parser_t *parser);
 /* selection-statement:
  *      if ( expression ) statement
  *      if ( expression ) statement else statement
- *      switch ( expression ) statement
  */
 static node_t *parse_if_stmt(parser_t *parser)
 {
@@ -756,6 +837,9 @@ static node_t *parse_if_stmt(parser_t *parser)
     return make_if(cond, then, els);
 }
 
+/* iteration-statment:
+ *      for ( expression-opt ; expression-opt ; expression-opt ) statement
+ */
 static node_t *parse_for_stmt(parser_t *parser)
 {
     node_t *init, *cond, *step, *body;
@@ -780,11 +864,12 @@ static node_t *parse_for_stmt(parser_t *parser)
         EXPECT_PUNCT(')');
     }
     body = parse_stmt(parser);
-    if (!body)
-        errorf("TODO\n");
     return make_for(init, cond, step, body);
 }
 
+/* iteration-statement:
+ *      while ( expression ) statement
+ */
 static node_t *parse_while_stmt(parser_t *parser)
 {
     node_t *cond;
@@ -795,6 +880,25 @@ static node_t *parse_while_stmt(parser_t *parser)
     EXPECT_PUNCT(')');
     body = parse_stmt(parser);
     return make_while(cond, body);
+}
+
+/* jump-statement:
+ *      return expression-opt ;
+ */
+static node_t *parse_return_stmt(parser_t *parser)
+{
+    node_t *expr;
+
+    if (TRY_PUNCT(';')) {
+        if (parser->ret != ctype_void)
+            errorf("\'return\' with no value, in function returning non-void in %s:%d\n", _FILE_, _LINE_);
+        return make_return(ctype_void, NULL);
+    }
+    expr = parse_expr(parser);
+    if (!is_same_type(expr->ctype, parser->ret))
+        errorf("return different type of value in %s:%d\n", _FILE_, _LINE_);
+    EXPECT_PUNCT(';');
+    return make_return(expr->ctype, expr);
 }
 
 /* block-item:
@@ -852,16 +956,13 @@ static node_t *parse_stmt(parser_t *parser)
         case KW_IF:
             return parse_if_stmt(parser);
         case KW_RETURN:
-            if (TRY_PUNCT(';'))
-                return make_return(NULL, NULL);
-            stmt = make_return(NULL, parse_expr(parser));
-            EXPECT_PUNCT(';');
-            return stmt;
+            return parse_return_stmt(parser);
+        case ';':
+            return NULL;
+
         default:
             errorf("unexpected keyword %d\n", token->ival);
         }
-    if (is_punct(token, ';'))
-        return NULL;
     UNGET(token);
     stmt = parse_expr(parser);
     EXPECT_PUNCT(';');
@@ -875,18 +976,26 @@ static node_t *parse_stmt(parser_t *parser)
  */
 static node_t *parse_func_def(parser_t *parser)
 {
-    dict_t *local_env;
+    dict_t *env;
     node_t *func;
+    ctype_t *ctype;
+    size_t i;
 
-    NEW_NODE(func, NODE_FUNC_DEF);
-    func->ctype = parse_decl_spec(parser);
-    func->func_name = NEXT()->sval;
-    EXPECT_PUNCT('(');
-    while (!is_punct(NEXT(), ')'))
-        ;
-    func->param_types = func->local_vars = NULL;
+    ctype = parse_decl_spec(parser);
+    func = parse_declarator(parser, ctype);
+    func->type = NODE_FUNC_DEF;
+    env = parser->env;
+    parser->env = make_dict(env);
+    parser->ret = func->ctype->ret;
+    for (i = 0; i < vector_len(func->params); i++) {
+        node_t *param = vector_get(func->params, i);
+        /* TODO: pointer to func as param */
+        dict_insert(parser->env, param->varname, param, true);
+    }
     EXPECT_PUNCT('{');
     func->func_body = parse_compound_stmt(parser);
+    parser->env = env;
+    parser->ret = NULL;
     return func;
 }
 
@@ -902,13 +1011,12 @@ static void builtin_init(dict_t *env)
     node_t *func_puts;
 
     NEW_NODE(func_puts, NODE_FUNC_DEF);
-    func_puts->ctype = ctype_int;
+    func_puts->ctype = make_ptr(NULL);
+    func_puts->ctype->ret = ctype_int;
     func_puts->func_name = "puts";
-    func_puts->param_types = make_vector();
-    vector_append(func_puts->param_types, ctype_char);
-    func_puts->local_vars = NULL;
+    func_puts->params = make_vector();
+    vector_append(func_puts->params, ctype_char);
     func_puts->func_body = NULL;
-    func_puts->params = NULL;
 
     dict_insert(env, "puts", func_puts, true);
 }
@@ -918,8 +1026,7 @@ void parser_init(parser_t *parser, lexer_t *lexer)
     assert(parser && lexer);
     parser->lexer = lexer;
     parser->env = make_dict(NULL);
+    parser->ret = NULL;
 
     builtin_init(parser->env);
 }
-
-
