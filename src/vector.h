@@ -9,7 +9,7 @@ typedef struct vetcor_t {
     size_t size;
 } vector_t;
 
-#define vector_len(v) ((v)->top)
+#define vector_len(v) ((v) ?(v)->top : 0)
 
 vector_t *make_vector(void);
 void vector_append(vector_t *v, void *val);
