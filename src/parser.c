@@ -20,7 +20,7 @@ ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
     do { \
         token_t *token = NEXT(); \
         if (token->type != TK_PUNCT || token->ival != (punct)) \
-            errorf("expected punctator %c\n", punct); \
+            errorf("expected punctator %c\n in %s:%d\n", punct, _FILE_, _LINE_); \
     } while (0)
 #define TRY_PUNCT(punct) \
     (is_punct(PEEK(), punct) ? (NEXT(), true) : false)
@@ -28,7 +28,7 @@ ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
     do { \
         token_t *token = NEXT(); \
         if (token->type != TK_KEYWORD || token->ival != keyword) \
-            errorf("expected keyword %c\n", keyword); \
+            errorf("expected keyword %c in %s:%d\n", keyword, _FILE_, _LINE_); \
     } while (0)
 #define TRY_KW(keyword) \
     (is_keyword(PEEK(), keyword) ? (NEXT(), true) : false)
@@ -87,13 +87,69 @@ static bool is_assign_op(token_t *token)
     return false;
 }
 
-bool is_same_type(ctype_t *t, ctype_t *p)
+static bool is_same_type(ctype_t *t, ctype_t *p)
 {
     if (t == p)
         return true;
-    if (t->type == p->type && t->size == p->size && is_same_type(t->ptr, p->ptr))
+    if (t->type == CTYPE_PTR && p->type == CTYPE_PTR
+        /* void * == any other type of pointer */
+        && (t->ptr == ctype_void || p->ptr == ctype_void || is_same_type(t->ptr, p->ptr)))
         return true;
     return false;
+}
+
+static bool is_arith_type(ctype_t *type)
+{
+    if (type == ctype_int)
+        return true;
+    return false;
+}
+
+static bool is_lvalue(node_t *node)
+{
+    if (node->type == NODE_VAR_DECL)
+        return true;
+    return false;
+}
+
+static bool is_ptr(ctype_t *ctype)
+{
+    if (ctype->type == CTYPE_PTR)
+        return true;
+    return false;
+}
+
+static bool is_null(node_t *node)
+{
+    if (node->type == NODE_CONSTANT && node->ctype == ctype_int && node->ival == 0)
+        return true;
+    return false;
+}
+
+/* error message helper functions */
+static char *type2str(ctype_t *t)
+{
+    static char *s[] = {
+        "void",
+        "character",
+        "integer",
+        "pointer"
+    };
+
+    assert(t && t->type >= 0 && t->type < 4);
+    return s[t->type];
+}
+
+static char *punct2str(int punct)
+{
+    static char *s[] = {
+        "++", "+=", "&&", "&=", "||", "|=", "--", "-=", "->",
+        "*=", "/=", "%=", "==", "!=", "^=", "<=", "<<", "<<=",
+        ">=", ">>", ">>="
+    };
+
+    assert(punct >= PUNCT_INC && punct <= PUNCT_IRSFT);
+    return s[punct - PUNCT_INC];
 }
 
 /************************** type constructors *************************/
@@ -120,13 +176,24 @@ static ctype_t *make_ptr(ctype_t *p)
         (node)->type = tp; \
     } while (0)
 
-static node_t *make_decl_var(ctype_t *ctype, char *varname)
+static node_t *make_var_decl(ctype_t *ctype, char *varname)
 {
     node_t *node;
 
     NEW_NODE(node, NODE_VAR_DECL);
     node->ctype = ctype;
     node->varname = varname;
+    return node;
+}
+
+static node_t *make_var_init(node_t *var, node_t *init)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_VAR_INIT);
+    node->binary_op = '+';
+    node->left = var;
+    node->right = init;
     return node;
 }
 
@@ -167,6 +234,7 @@ static node_t *make_ternary(ctype_t *ctype, node_t *cond, node_t *then, node_t *
     node_t *node;
 
     NEW_NODE(node, NODE_TERNARY);
+    node->ctype = ctype;
     node->cond = cond;
     node->then = then;
     node->els = els;
@@ -428,8 +496,22 @@ static node_t *parse_additive_expr(parser_t *parser)
 
     for (token = NEXT(); is_punct(token, '+') || is_punct(token, '-'); token = NEXT()) {
         node_t *mul = parse_multiplicative_expr(parser);
-        if (!mul)
-            errorf("TODO\n");
+        /* TODO: type check and more concise error message: pointer type */
+        /* pointer +- integer */
+        if (is_ptr(add->ctype) && mul->ctype == ctype_int)
+            add = make_binary(add->ctype, token->ival, add, mul);
+        /* integer + pointer */
+        else if (is_punct(token, '+') && add->ctype == ctype_int && is_ptr(mul->ctype))
+            add = make_binary(mul->ctype, '+', add, mul);
+        /* pointer - pointer */
+        else if (is_punct(token, '-') && is_ptr(add->ctype) && is_same_type(add->ctype, mul->ctype))
+            add = make_binary(ctype_int, '-', add, mul);
+        /* number +- number */
+        else if (is_arith_type(add->ctype) && is_arith_type(mul->ctype))
+            add = make_binary(add->ctype, token->ival, add, mul);
+        else
+            errorf("invalid operands to binary %c (have \'%s\' and \'%s\') in %s:%d\n",
+                    token->ival, type2str(add->ctype), type2str(mul->ctype), _FILE_, _LINE_);
         add = make_binary(ctype_int, token->ival, add, mul);
     }
     UNGET(token);
@@ -448,8 +530,9 @@ static node_t *parse_shift_expr(parser_t *parser)
 
     for (token = NEXT(); is_punct(token, PUNCT_LSFT) || is_punct(token, PUNCT_RSFT); token = NEXT()) {
         node_t *add = parse_additive_expr(parser);
-        if (!add)
-            errorf("TODO\n");
+        if (shift->ctype != ctype_int || add->ctype != ctype_int)
+            errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
+                    punct2str(token->ival), type2str(shift->ctype), type2str(add->ctype));
         shift = make_binary(ctype_int, token->ival, shift, add);
     }
     UNGET(token);
@@ -472,9 +555,15 @@ static node_t *parse_relational_expr(parser_t *parser)
         is_punct(token, '<') || is_punct(token, '>') || is_punct(token, PUNCT_LE) || is_punct(token, PUNCT_GE);
         token = NEXT()) {
         node_t *shift = parse_shift_expr(parser);
-        if (!shift)
-            errorf("TODO\n");
-        /* TODO: type check */
+        /* TODO: refactory */
+        if (is_ptr(rel->ctype) && is_ptr(shift->ctype)) {
+            if (!is_same_type(rel->ctype, shift->ctype))
+                errorf("comparison of distinct pointer types lacks a cast in %s:%d\n", _FILE_, _LINE_);
+        } else if (!((is_arith_type(rel->ctype) && is_arith_type(shift->ctype))
+                    || (is_ptr(rel->ctype) && is_null(shift))
+                    || (is_ptr(shift->ctype) && is_null(rel))))
+            errorf("comparison between %s and %s in %s:%d\n",
+                    type2str(rel->ctype), type2str(shift->ctype), _FILE_, _LINE_);
         make_binary(ctype_int, token->ival, rel, shift);
     }
     UNGET(token);
@@ -493,9 +582,17 @@ static node_t *parse_equality_expr(parser_t *parser)
 
     for (token = NEXT(); is_punct(token, PUNCT_EQ) || is_punct(token, PUNCT_NE); token = NEXT()) {
         node_t *rel = parse_relational_expr(parser);
-        if (!rel)
-            errorf("TODO\n");
-        /* TODO: type check*/
+        /* both operands are pointers to qualified or unqualified versions of compatible types */
+        if (is_ptr(eq->ctype) && is_ptr(rel->ctype)) {
+            if (!is_same_type(eq->ctype, rel->ctype))
+                errorf("comparison of distinct pointer types lacks a cast in %s:%d\n", _FILE_, _LINE_);
+                    /* both operands have arithmetic type */
+        } else if (!((is_arith_type(eq->ctype) && is_arith_type(rel->ctype))
+                    /* one operand is a pointer and the other is a null pointer constant */
+                    || (is_ptr(eq->ctype) && is_null(rel))
+                    || (is_ptr(rel->ctype) && is_null(eq))))
+            errorf("comparison between %s and %s in %s:%d\n",
+                    type2str(eq->ctype), type2str(rel->ctype), _FILE_, _LINE_);
         eq = make_binary(ctype_int, token->ival, eq, rel);
     }
     UNGET(token);
@@ -511,8 +608,9 @@ static node_t *parse_bit_and_expr(parser_t *parser)
     node_t *bitand = parse_equality_expr(parser);
     while (TRY_PUNCT('&')) {
         node_t *eq = parse_equality_expr(parser);
-        if (!eq)
-            errorf("TODO\n");
+        if (bitand->ctype != ctype_int || eq->ctype != ctype_int)
+            errorf("invalid operands to binary '&' (have \'%s\' and \'%s\') in %s:%d\n",
+                    type2str(bitand->ctype), type2str(eq->ctype), _FILE_, _LINE_);
         bitand = make_binary(ctype_int, '&', bitand, eq);
     }
     return bitand;
@@ -526,10 +624,11 @@ static node_t *parse_bit_xor_expr(parser_t *parser)
 {
     node_t *bitxor = parse_bit_and_expr(parser);
     while (TRY_PUNCT('^')) {
-        node_t *and = parse_bit_and_expr(parser);
-        if (!and)
-            errorf("TODO\n");
-        bitxor = make_binary(ctype_int, '^', bitxor, and);
+        node_t *bitand = parse_bit_and_expr(parser);
+        if (bitxor->ctype != ctype_int || bitand->ctype != ctype_int)
+            errorf("invalid operands to binary '^' (have \'%s\' and \'%s\') in %s:%d\n",
+                    type2str(bitxor->ctype), type2str(bitand->ctype), _FILE_, _LINE_);
+        bitxor = make_binary(ctype_int, '^', bitxor, bitand);
     }
     return bitxor;
 }
@@ -543,8 +642,9 @@ static node_t *parse_bit_or_expr(parser_t *parser)
     node_t *bitor = parse_bit_xor_expr(parser);
     while (TRY_PUNCT('|')) {
         node_t *bitxor = parse_bit_xor_expr(parser);
-        if (!bitxor)
-            errorf("TODO\n");
+        if (bitor->ctype != ctype_int || bitxor->ctype != ctype_int)
+            errorf("invalid operands to binary '|' (have \'%s\' and \'%s\') in %s:%d\n",
+                    type2str(bitor->ctype), type2str(bitxor->ctype), _FILE_, _LINE_);
         bitor = make_binary(ctype_int, '|', bitor, bitxor);
     }
     return bitor;
@@ -559,8 +659,7 @@ static node_t *parse_log_and_expr(parser_t *parser)
     node_t *logand = parse_bit_or_expr(parser);
     while (TRY_PUNCT(PUNCT_AND)) {
         node_t *bitor = parse_bit_or_expr(parser);
-        if (!bitor)
-            errorf("TODO\n");
+        /* TODO: type check scalar check */
         logand = make_binary(ctype_int, PUNCT_AND, logand, bitor);
     }
     return logand;
@@ -575,8 +674,7 @@ static node_t *parse_log_or_expr(parser_t *parser)
     node_t *logor = parse_log_and_expr(parser);
     while (TRY_PUNCT(PUNCT_OR)) {
         node_t *logand = parse_log_and_expr(parser);
-        if (!logand)
-            errorf("TODO\n");
+        /* TODO: type check scalar type */
         logor = make_binary(ctype_int, PUNCT_OR, logor, logand);
     }
     return logor;
@@ -588,15 +686,17 @@ static node_t *parse_log_or_expr(parser_t *parser)
  */
 static node_t *parse_cond_expr(parser_t *parser)
 {
-    node_t *logor = parse_log_or_expr(parser);
+    node_t *cond = parse_log_or_expr(parser);
     if (TRY_PUNCT('?')) {
-        node_t *expr = parse_expr(parser);
+        node_t *then = parse_expr(parser);
         EXPECT_PUNCT(':');
-        node_t *cond = parse_cond_expr(parser);
+        node_t *els = parse_cond_expr(parser);
         /* TODO: type */
-        return make_ternary(NULL, logor, expr, cond);
+        if (!is_same_type(then->ctype, els->ctype))
+            errorf("type mismatch in conditional expression in %s:%d\n", _FILE_, _LINE_);
+        return make_ternary(then->ctype, cond, then, els);
     }
-    return logor;
+    return cond;
 }
 /* assignment-expression:
  *      conditional-expression
@@ -616,10 +716,17 @@ static node_t *parse_assign_expr(parser_t *parser)
         UNGET(token);
         return node;
     }
+    if (!is_lvalue(node))
+        errorf("lvalue required as left operand of assignment in %s:%d\n", _FILE_, _LINE_);
     assign = parse_assign_expr(parser);
-    if (!assign)
-        errorf("TODO\n");
-    return make_binary(NULL, token->ival, node, assign);
+    if (token->ival == '=') {
+        if (!is_same_type(node->ctype, assign->ctype))
+            errorf("assignment make %s from %s without a cast in %s:%d\n",
+                    type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
+    } else if (node->ctype != ctype_int || assign->ctype != ctype_int)
+        errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
+                punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
+    return make_binary(node->ctype, token->ival, node, assign);
 }
 
 /* expression:
@@ -652,7 +759,7 @@ static ctype_t *parse_decl_spec(parser_t *parser)
     /* TODO */
     token_t *token = NEXT();
     if (token->type != TK_KEYWORD)
-        errorf("expected type sepcifiers\n");
+        errorf("expected type sepcifiers in %s:%d\n", _FILE_, _LINE_);
     switch (token->ival) {
     case KW_VOID:
         return ctype_void;
@@ -661,7 +768,7 @@ static ctype_t *parse_decl_spec(parser_t *parser)
     case KW_INT:
         return ctype_int;
     default:
-        errorf("expected type specifiers\n");
+        errorf("expected type specifiers in %s:%d\n", _FILE_, _LINE_);
     }
     return NULL;
 }
@@ -708,7 +815,7 @@ static node_t *parse_direct_decl(parser_t *parser, ctype_t *ctype)
         decl = parse_declarator(parser, ctype);
         EXPECT_PUNCT(')');
     } else if ((token = NEXT())->type != TK_ID)
-        errorf("expected identifier\n");
+        errorf("expected identifier in %s:%d\n", _FILE_, _LINE_);
     if (TRY_PUNCT('(')) {
         size_t i;
         decl = calloc(1, sizeof(*decl));
@@ -722,7 +829,7 @@ static node_t *parse_direct_decl(parser_t *parser, ctype_t *ctype)
             vector_append(decl->ctype->params, ((node_t *) vector_get(decl->params, i))->ctype);
         EXPECT_PUNCT(')');
     } else {
-        decl = make_decl_var(ctype, token->sval);
+        decl = make_var_decl(ctype, token->sval);
     }
     return decl;
 }
@@ -755,9 +862,9 @@ static node_t *parse_declarator(parser_t *parser, ctype_t *ctype)
  *      { initializer-list }
  *      { initializer-list , }
  */
-/* TODO */
 static node_t *parse_initializer(parser_t *parser)
 {
+    /* TODO: array, structure */
     return parse_assign_expr(parser);
 }
 
@@ -768,11 +875,13 @@ static node_t *parse_initializer(parser_t *parser)
 static node_t *parse_init_decl(parser_t *parser, ctype_t *ctype)
 {
     node_t *decl = parse_declarator(parser, ctype);
+    dict_insert(parser->env, decl->varname, decl, true);
     if (TRY_PUNCT('=')) {
         node_t *init = parse_initializer(parser);
-        if (!init)
-            errorf("TODO\n");
-        return make_binary(NULL, '=', decl, init);
+        if (!is_same_type(init->ctype, decl->ctype))
+            errorf("initialization makes %s from %s without a cast in %s:%d\n",
+                    type2str(decl->ctype), type2str(init->ctype), _FILE_, _LINE_);
+        return make_var_init(decl, init);
     }
     return decl;
 }
@@ -786,8 +895,6 @@ static node_t *parse_init_decl_list(parser_t *parser, ctype_t *ctype)
     node_t *list = parse_init_decl(parser, ctype);
     while (TRY_PUNCT(',')) {
         node_t *declarator = parse_init_decl(parser, ctype);
-        if (!declarator)
-            errorf("TODO\n");
         list = make_binary(NULL, ',', list, declarator);
     }
     return list;
@@ -803,10 +910,6 @@ static node_t *parse_decl(parser_t *parser)
 
     ctype = parse_decl_spec(parser);
     node = parse_init_decl_list(parser, ctype);
-    if (node->type == NODE_VAR_DECL)
-        dict_insert(parser->env, node->varname, node, true);
-    else
-        dict_insert(parser->env, node->func_name, node, true);
     EXPECT_PUNCT(';');
     return node;
 }
@@ -825,13 +928,11 @@ static node_t *parse_if_stmt(parser_t *parser)
     node_t *els = NULL;
 
     EXPECT_PUNCT('(');
+    if (TRY_PUNCT(')'))
+        errorf("expected expression before \')\' token in %s:%d\n", _FILE_, _LINE_);
     cond = parse_expr(parser);
-    if (!cond)
-        errorf("TODO\n");
     EXPECT_PUNCT(')');
     then = parse_stmt(parser);
-    if (!then)
-        errorf("TODO\n");
     if (TRY_KW(KW_ELSE))
         els = parse_stmt(parser);
     return make_if(cond, then, els);
@@ -896,7 +997,8 @@ static node_t *parse_return_stmt(parser_t *parser)
     }
     expr = parse_expr(parser);
     if (!is_same_type(expr->ctype, parser->ret))
-        errorf("return different type of value in %s:%d\n", _FILE_, _LINE_);
+        errorf("return makes %s from %s without a cast in %s:%d\n",
+                type2str(parser->ret), type2str(expr->ctype), _FILE_, _LINE_);
     EXPECT_PUNCT(';');
     return make_return(expr->ctype, expr);
 }
@@ -947,8 +1049,13 @@ static node_t *parse_stmt(parser_t *parser)
 
     if (token->type == TK_KEYWORD || token->type == TK_PUNCT)
         switch (token->ival) {
-        case '{':
-            return parse_compound_stmt(parser);
+        case '{': {
+            dict_t *env = parser->env;
+            parser->env = make_dict(env);
+            stmt = parse_compound_stmt(parser);
+            parser->env = env;
+            return stmt;
+        }
         case KW_FOR:
             return parse_for_stmt(parser);
         case KW_WHILE:
@@ -996,6 +1103,7 @@ static node_t *parse_func_def(parser_t *parser)
     func->func_body = parse_compound_stmt(parser);
     parser->env = env;
     parser->ret = NULL;
+    dict_insert(parser->env, func->func_name, func, true);
     return func;
 }
 
