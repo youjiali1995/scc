@@ -26,7 +26,6 @@ typedef struct ctype_t {
 extern ctype_t *ctype_void;
 extern ctype_t *ctype_char;
 extern ctype_t *ctype_int;
-extern ctype_t *ctype_string;
 
 enum {
     NODE_CONSTANT,
