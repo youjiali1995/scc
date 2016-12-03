@@ -20,7 +20,7 @@ ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
     do { \
         token_t *token = NEXT(); \
         if (token->type != TK_PUNCT || token->ival != (punct)) \
-            errorf("expected punctator %c\n in %s:%d\n", punct, _FILE_, _LINE_); \
+            errorf("expected \'%c\' in %s:%d\n", punct, _FILE_, _LINE_); \
     } while (0)
 #define TRY_PUNCT(punct) \
     (is_punct(PEEK(), punct) ? (NEXT(), true) : false)
@@ -191,9 +191,20 @@ static node_t *make_var_init(node_t *var, node_t *init)
     node_t *node;
 
     NEW_NODE(node, NODE_VAR_INIT);
-    node->binary_op = '+';
+    node->binary_op = '=';
     node->left = var;
     node->right = init;
+    return node;
+}
+
+static node_t *make_func_call(ctype_t *ctype, char *func_name, vector_t *args)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_FUNC_CALL);
+    node->ctype = ctype;
+    node->func_name = func_name;
+    node->params = args;
     return node;
 }
 
@@ -211,6 +222,17 @@ static node_t *make_unary(ctype_t *ctype, int op, node_t *operand)
     node_t *node;
 
     NEW_NODE(node, NODE_UNARY);
+    node->ctype = ctype;
+    node->unary_op = op;
+    node->operand = operand;
+    return node;
+}
+
+static node_t *make_postfix(ctype_t *ctype, int op, node_t *operand)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_POSTFIX);
     node->ctype = ctype;
     node->unary_op = op;
     node->operand = operand;
@@ -252,12 +274,22 @@ static node_t *make_number(char *s)
     return node;
 }
 
+static node_t *make_char(int c)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_CONSTANT);
+    node->ctype = ctype_char;
+    node->ival = c;
+    return node;
+}
+
 static node_t *make_string(char *s)
 {
     node_t *node;
 
     NEW_NODE(node, NODE_STRING);
-    node->ctype = ctype_char;
+    node->ctype = make_ptr(ctype_char);
     node->sval = s;
     return node;
 }
@@ -326,8 +358,6 @@ static node_t *parse_primary_expr(parser_t *parser)
 
     if (TRY_PUNCT('(')) {
         primary = parse_expr(parser);
-        if (!primary)
-            errorf("TODO\n");
         EXPECT_PUNCT(')');
         return primary;
     }
@@ -337,22 +367,62 @@ static node_t *parse_primary_expr(parser_t *parser)
     case TK_ID:
         primary = dict_lookup(parser->env, token->sval);
         if (!primary)
-            errorf("TODO\n");
-        return primary;
-
+            errorf("\'%s\' undeclared in %s:%d\n", token->sval, _FILE_, _LINE_);
+        break;
     case TK_NUMBER:
         /* TODO */
-        return make_number(token->sval);
-
-    case TK_CHAR:
-        /* TODO */
+        primary = make_number(token->sval);
         break;
-
+    case TK_CHAR:
+        primary = make_char(token->ival);
+        break;
     case TK_STRING:
-        /* TODO */
-        return make_string(token->sval);
+        primary = make_string(token->sval);
+        break;
+    default:
+        break;
     }
-    return NULL;
+    return primary;
+}
+
+/* argument-expression-list:
+ *      assignment-expression
+ *      argument-expression-list , assign-expression
+ */
+static vector_t *parse_arg_expr_list(parser_t *parser, node_t *func)
+{
+    vector_t *args;
+    vector_t *types = func->ctype->param_types;
+    size_t i;
+
+    if (TRY_PUNCT(')')) {
+        if (types == NULL)
+            return NULL;
+        else
+            errorf("too few arguments to function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
+    }
+
+    args = make_vector();
+    for (i = 0; i < vector_len(types); i++) {
+        ctype_t *type = vector_get(types, i);
+        if (is_punct(PEEK(), ',') || is_punct(PEEK(), ')') || is_punct(PEEK(), ';'))
+            errorf("expected expression before \'%c\' token in %s:%d\n", PEEK()->ival, _FILE_, _LINE_);
+        node_t *arg = parse_assign_expr(parser);
+        if (!is_same_type(type, arg->ctype))
+            errorf("passing argument %d of \'%s\' makes %s from %s without a cast in %s:%d\n",
+                    (int) i + 1, func->func_name, type2str(type), type2str(arg->ctype), _FILE_, _LINE_);
+        vector_append(args, arg);
+        if (i == vector_len(types) - 1 || is_punct(PEEK(), ')'))
+            break;
+        if (!TRY_PUNCT(','))
+            break;
+    }
+    if (i < vector_len(types) - 1)
+        errorf("too few arguments to function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
+    else if (TRY_PUNCT(','))
+        errorf("too many arguments to function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
+    EXPECT_PUNCT(')');
+    return args;
 }
 
 /* postfix-expression:
@@ -372,40 +442,38 @@ static node_t *parse_postfix_expr(parser_t *parser)
     token_t *token;
 
     if (TRY_PUNCT('(')) {
-        /* TODO: compound literal */
+        errorf("TODO: compound literal in %s:%d\n", _FILE_, _LINE_);
     }
     post = parse_primary_expr(parser);
-    token = NEXT();
-    if (token->type == TK_PUNCT)
-        switch (token->ival) {
-        case '[':
-            /* TODO */
-            break;
+    for (token = NEXT();; token = NEXT()) {
+        if (is_punct(token, '['))
+            errorf("TODO: array in %s:%d\n", _FILE_, _LINE_);
+        else if (is_punct(token, '.'))
+            errorf("TODO: struct or union in %s:%d\n", _FILE_, _LINE_);
+        else if (is_punct(token, PUNCT_ARROW))
+            errorf("TODO: struct or union in %s:%d\n", _FILE_, _LINE_);
 
-        case '(': {
-            /* TODO */
-            vector_t *params = make_vector();
-            node_t *param = parse_assign_expr(parser);
-            vector_append(params, param);
-            EXPECT_PUNCT(')');
-            post->type = NODE_FUNC_CALL;
-            post->params = params;
-            return post;
+        else if (is_punct(token, PUNCT_INC) || is_punct(token, PUNCT_DEC)) {
+            if (!is_lvalue(post))
+                errorf("lvalue required as unary \'%s\' operand in %s:%d\n",
+                        punct2str(token->ival), _FILE_, _LINE_);
+            if (!is_arith_type(post->ctype) && !is_ptr(post->ctype))
+                errorf("invalid type argument of unary \'%s\' (have \'%s\') in %s:%d\n",
+                        punct2str(token->ival), type2str(post->ctype), _FILE_, _LINE_);
+            post = make_postfix(post->ctype, token->ival, post);
+
+        } else if (is_punct(token, '(')) {
+            /* TODO: function pointer */
+            if (post->type != NODE_FUNC_DECL && post->type != NODE_FUNC_DEF)
+                errorf("called object is not a function or function pointer in %s:%d\n", _FILE_, _LINE_);
+            vector_t *args = parse_arg_expr_list(parser, post);
+            post = make_func_call(post->ctype->ret, post->func_name, args);
+
+        } else {
+            UNGET(token);
+            break;
         }
-        case '.':
-            /* TODO */
-            break;
-
-        case PUNCT_ARROW:
-            /* TODO */
-            break;
-
-        case PUNCT_INC:
-        case PUNCT_DEC:
-            /* TODO */
-            return make_unary(ctype_int, token->ival, post);
-        }
-    UNGET(token);
+    }
     return post;
 }
 
@@ -422,26 +490,83 @@ static node_t *parse_postfix_expr(parser_t *parser)
  */
 static node_t *parse_unary_expr(parser_t *parser)
 {
-    token_t *token = NEXT();
+    token_t *token;
+    node_t *unary, *expr;
 
+    token = NEXT();
     if (is_punct(token, PUNCT_INC) || is_punct(token, PUNCT_DEC)) {
-        node_t *unary = parse_unary_expr(parser);
-        if (!unary)
-            errorf("TODO\n");
-        return make_unary(ctype_int, token->ival, unary);
-    }
+        expr = parse_unary_expr(parser);
+        if (!is_lvalue(expr))
+            errorf("lvalue required as unary \'%s\' operand in %s:%d\n",
+                    punct2str(token->ival), _FILE_, _LINE_);
+        if (!is_arith_type(expr->ctype) && !is_ptr(expr->ctype))
+            errorf("invalid type argument of unary \'%s\' (have \'%s\') in %s:%d\n",
+                    punct2str(token->ival), type2str(expr->ctype), _FILE_, _LINE_);
+        unary = make_unary(expr->ctype, token->ival, expr);
 
-    if (is_punct(token, '&') || is_punct(token, '*') || is_punct(token, '+')
-            || is_punct(token, '-') || is_punct(token, '~') || is_punct(token, '!')) {
-        node_t *cast = parse_cast_expr(parser);
-        if (!cast)
-            errorf("TODO\n");
-        return make_unary(ctype_int, token->ival, cast);
-    }
+    } else if (is_punct(token, '&')) {
+        expr = parse_unary_expr(parser);
+        if (!is_lvalue(expr))
+            errorf("lvalue required as unary \'&\' operand in %s:%d\n", _FILE_, _LINE_);
+        unary = make_unary(make_ptr(expr->ctype), '&', expr);
+
+    } else if (is_punct(token, '*')) {
+        expr = parse_unary_expr(parser);
+        if (!is_ptr(expr->ctype))
+            errorf("invalid type argument of unary \'*\' (have \'%s\') in %s:%d\n",
+                    type2str(expr->ctype), _FILE_, _LINE_);
+        unary = make_unary(expr->ctype->ptr, '*', expr);
+
+    } else if (is_punct(token, '+') || is_punct(token, '-')) {
+        expr = parse_unary_expr(parser);
+        if (!is_arith_type(expr->ctype))
+            errorf("wrong type argument to unary \'%c\' in %s:%d\n", token->ival, _FILE_, _LINE_);
+        unary = make_unary(expr->ctype, token->ival, expr);
+
+    } else if (is_punct(token, '~')) {
+        expr = parse_unary_expr(parser);
+        if (expr->ctype != ctype_int)
+            errorf("wrong type argument to bit-complement in %s:%d\n", _FILE_, _LINE_);
+        unary = make_unary(expr->ctype, '~', expr);
+
+    } else if (is_punct(token, '!')) {
+        expr = parse_unary_expr(parser);
+        unary = make_unary(ctype_int, '!', expr);
 
     /* TODO: sizeof */
-    UNGET(token);
-    return parse_postfix_expr(parser);
+    } else {
+        UNGET(token);
+        unary = parse_postfix_expr(parser);
+    }
+
+    return unary;
+}
+
+static ctype_t *parse_type_name(parser_t *parser)
+{
+    token_t *token = NEXT();
+    ctype_t *ctype;
+
+    if (token->type != TK_KEYWORD)
+        errorf("expected type specifiers in %s:%d\n", _FILE_, _LINE_);
+    switch (token->ival) {
+    case KW_VOID:
+        ctype = ctype_void;
+        break;
+    case KW_CHAR:
+        ctype = ctype_char;
+        break;
+    case KW_INT:
+        ctype = ctype_int;
+        break;
+
+    default:
+        errorf("expected type specifiers in %s:%d\n", _FILE_, _LINE_);
+        break;
+    }
+    while (TRY_PUNCT('*'))
+        ctype = make_ptr(ctype);
+    return ctype;
 }
 
 /* cast-expression:
@@ -453,11 +578,17 @@ static node_t *parse_cast_expr(parser_t *parser)
     if (TRY_PUNCT('(')) {
         node_t *cast;
         /* TODO */
-        NEXT();
+        ctype_t *ctype = parse_type_name(parser);
         EXPECT_PUNCT(')');
+        if (ctype == ctype_void)
+            errorf("void value not ignored as it ought to be in %s:%d\n", _FILE_, _LINE_);
         cast = parse_cast_expr(parser);
-        if (!cast)
-            errorf("TODO\n");
+        if (is_ptr(cast->ctype) && cast->ctype->size != ctype->size)
+            errorf("cast from pointer to integer of different size in %s:%d\n", _FILE_, _LINE_);
+        else if (is_ptr(ctype) && cast->ctype->size != ctype->size)
+            errorf("cast to pointer from integer of different size in %s:%d\n", _FILE_, _LINE_);
+        /* TODO */
+        cast->ctype = ctype;
         return cast;
     }
     return parse_unary_expr(parser);
@@ -476,8 +607,12 @@ static node_t *parse_multiplicative_expr(parser_t *parser)
 
     for (token = NEXT(); is_punct(token, '*') || is_punct(token, '/') || is_punct(token, '%'); token = NEXT()) {
         node_t *cast = parse_cast_expr(parser);
-        if (!cast)
-            errorf("TODO\n");
+        if (!(is_arith_type(mul->ctype) && is_arith_type(cast->ctype))
+                || (is_punct(token, '%') && (mul->ctype != ctype_int || cast->ctype != ctype_int)))
+            errorf("invalid operands to binary %c (have \'%s\' and \'%s\') in %s:%d\n",
+                    token->ival, type2str(mul->ctype), type2str(cast->ctype), _FILE_, _LINE_);
+        if ((is_punct(token, '/') || is_punct(token, '%')) && is_null(cast))
+            errorf("division by zero in %s:%d\n", _FILE_, _LINE_);
         mul = make_binary(ctype_int, token->ival, mul, cast);
     }
     UNGET(token);
@@ -821,12 +956,14 @@ static node_t *parse_direct_decl(parser_t *parser, ctype_t *ctype)
         decl = calloc(1, sizeof(*decl));
         decl->type = NODE_FUNC_DECL;
         decl->func_name = token->sval;
-        decl->params = parse_param_list(parser);
         decl->ctype = make_ptr(NULL);
         decl->ctype->ret = ctype;
-        decl->ctype->params = make_vector();
-        for (i = 0; i < vector_len(decl->params); i++)
-            vector_append(decl->ctype->params, ((node_t *) vector_get(decl->params, i))->ctype);
+        decl->params = parse_param_list(parser);
+        if (decl->params) {
+            decl->ctype->param_types = make_vector();
+            for (i = 0; i < vector_len(decl->params); i++)
+                vector_append(decl->ctype->param_types, ((node_t *) vector_get(decl->params, i))->ctype);
+        }
         EXPECT_PUNCT(')');
     } else {
         decl = make_var_decl(ctype, token->sval);
@@ -1068,7 +1205,7 @@ static node_t *parse_stmt(parser_t *parser)
             return NULL;
 
         default:
-            errorf("unexpected keyword %d\n", token->ival);
+            break;
         }
     UNGET(token);
     stmt = parse_expr(parser);
@@ -1114,19 +1251,24 @@ node_t *get_node(parser_t *parser)
     return parse_func_def(parser);
 }
 
-static void builtin_init(dict_t *env)
+static node_t *make_puts(void)
 {
     node_t *func_puts;
 
     NEW_NODE(func_puts, NODE_FUNC_DEF);
     func_puts->ctype = make_ptr(NULL);
     func_puts->ctype->ret = ctype_int;
+    func_puts->ctype->param_types = make_vector();
+    vector_append(func_puts->ctype->param_types, make_ptr(ctype_char));
     func_puts->func_name = "puts";
-    func_puts->params = make_vector();
-    vector_append(func_puts->params, ctype_char);
+    func_puts->params = NULL;
     func_puts->func_body = NULL;
+    return func_puts;
+}
 
-    dict_insert(env, "puts", func_puts, true);
+static void builtin_init(dict_t *env)
+{
+    dict_insert(env, "puts", make_puts(), true);
 }
 
 void parser_init(parser_t *parser, lexer_t *lexer)
