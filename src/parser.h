@@ -19,16 +19,19 @@ typedef struct ctype_t {
     struct ctype_t *ptr;
     /* function */
     struct ctype_t *ret;
-    vector_t *params;
+    /* function parameter types */
+    vector_t *param_types;
 } ctype_t;
 
 extern ctype_t *ctype_void;
 extern ctype_t *ctype_char;
 extern ctype_t *ctype_int;
+extern ctype_t *ctype_string;
 
 enum {
     NODE_CONSTANT,
     NODE_STRING,
+    NODE_POSTFIX, /* ++ -- */
     NODE_UNARY,
     NODE_BINARY,
     NODE_TERNARY, /* ? : */
@@ -48,7 +51,7 @@ typedef struct node_t {
     int type;
     ctype_t *ctype;
     union {
-        /* int */
+        /* int, char */
         long ival;
         /* double */
         double dval;
@@ -67,7 +70,7 @@ typedef struct node_t {
                 char *glabel;
             };
         };
-        /* unary operator */
+        /* unary or postfix++ -- */
         struct {
             int unary_op;
             struct node_t *operand;
@@ -81,11 +84,10 @@ typedef struct node_t {
         /* function */
         struct {
             char *func_name;
-            /* function declaration */
-            vector_t *params; /* save parameters for env */
+            /* save parameters for env when function declaration
+             * save args when functions call */
+            vector_t *params;
             struct node_t *func_body;
-            /* function call */
-            vector_t *args;
         };
         /* if or ternary ? : */
         struct {
