@@ -29,6 +29,12 @@ void *vector_get(vector_t *vec, size_t idx)
     return vec->item[idx];
 }
 
+void *vector_pop(vector_t *vec)
+{
+    assert(vec && vec->top > 0);
+    return vec->item[--vec->top];
+}
+
 void free_vector(vector_t *vec, void (*free_item)(void *))
 {
     size_t i;
