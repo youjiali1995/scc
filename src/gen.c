@@ -1,5 +1,6 @@
 #include <assert.h>
 #include "gen.h"
+#include "util.h"
 
 static char suffix[9] = {0, 'b', 'w', 0, 'l', 0, 0, 0, 'q'};
 static char *arg_regs[9][6] = {
@@ -16,37 +17,20 @@ static char *callee_saves[] = {"%rbx", "%r12", "%r13", "%r14", "%r15", NULL};
 
 static int offset;
 
-#define EMIT(fmt, ...) \
-    do { \
-        fprintf(fp, "\t"); \
-        fprintf(fp, fmt, ##__VA_ARGS__); \
-        fprintf(fp, "\n"); \
-    } while (0)
-#define EMIT_LABEL(fmt, ...) \
-    do { \
-        fprintf(fp, fmt, ##__VA_ARGS__); \
-        fprintf(fp, ":\n"); \
-    } while (0)
+#define EMIT(fmt, ...) fprintf(fp, "\t" fmt "\n", ##__VA_ARGS__)
+#define EMIT_LABEL(fmt, ...) fprintf(fp, fmt ":\n", ##__VA_ARGS__)
 #define PUSH(fmt, ...) \
     do { \
-        fprintf(fp, "\tpushq   "); \
-        fprintf(fp, fmt, ##__VA_ARGS__); \
-        fprintf(fp, "\n"); \
+        fprintf(fp, "\tpushq   " fmt "\n", ##__VA_ARGS__); \
         offset += 8; \
     } while (0)
 #define POP(fmt, ...) \
     do { \
-        fprintf(fp, "\tpopq    "); \
-        fprintf(fp, fmt, ##_VA_ARGS__); \
-        fprintf(fp, "\n"); \
+        fprintf(fp, "\tpopq    " fmt "\n", ##__VA_ARGS__); \
         offset -= 8; \
     } while (0)
 #define MOV(size, fmt, ...) \
-    do { \
-        fprintf(fp, "\tmov%c    ", suffix[size]); \
-        fprintf(fp, fmt, ##__VA_ARGS__); \
-        fprintf(fp, "\n"); \
-    } while (0)
+    fprintf(fp, "\tmov%c    " fmt "\n", suffix[size], ##__VA_ARGS__)
 
 static int align(int m, int n)
 {
@@ -62,6 +46,14 @@ static void emit_constant(FILE *fp, node_t *node)
 
 static void emit_string(FILE *fp, node_t *node)
 {
+    static int n = 0;
+
+    assert(node && node->type == NODE_STRING);
+    EMIT(".section\t.rodata");
+    node->slabel = format(".LC%d", n++);
+    EMIT_LABEL("%s", node->slabel);
+    EMIT(".string \"%s\"", unescape(node->sval));
+    EMIT(".text");
 }
 
 static void emit_postfix(FILE *fp, node_t *node)
@@ -158,7 +150,8 @@ static void emit_func_prologue(FILE *fp, node_t *node)
     offset = 0;
     set_var_offset(node->params);
     set_var_offset(get_local_var(node->func_body));
-    EMIT("subq    $%d, %%rsp", offset);
+    if (offset)
+        EMIT("subq    $%d, %%rsp", offset);
 
     /* TODO: float type %xmm
      *       > 6 args
@@ -177,7 +170,7 @@ static void emit_ret(FILE *fp)
 
 static void emit_func_def(FILE *fp, node_t *node)
 {
-    assert(node || node->type == NODE_FUNC_DEF);
+    assert(node && node->type == NODE_FUNC_DEF);
     emit_func_prologue(fp, node);
     emit_compound_stmt(fp, node->func_body);
     emit_ret(fp);
@@ -185,6 +178,26 @@ static void emit_func_def(FILE *fp, node_t *node)
 
 static void emit_func_call(FILE *fp, node_t *node)
 {
+    size_t i;
+
+    assert(node && node->type == NODE_FUNC_CALL);
+    for (i = 0; i < vector_len(node->params); i++) {
+        node_t *arg = vector_get(node->params, i);
+        emit(fp, arg);
+        if (arg->type == NODE_STRING)
+            MOV(8, "$%s, %s", arg->slabel, arg_regs[8][i]);
+        else if (arg->type == NODE_CONSTANT)
+            MOV(arg->ctype->size, "$%d, %s", arg->ival, arg_regs[arg->ctype->size][i]);
+        else if (arg->type == NODE_VAR_DECL)
+            MOV(arg->ctype->size, "-%d(%%rbp), %s", arg->loffset, arg_regs[arg->ctype->size][i]);
+        else
+            /* TODO: expr */
+            MOV(8, "%%rax, %s", arg_regs[8][i]);
+    }
+    /* size of stack frame is times of 16 bytes */
+    if (offset % 16 != 0)
+        EMIT("subq    $%d, %%rsp", align(offset, 16) - offset);
+    EMIT("call    %s", node->func_name);
 }
 
 static void emit_var_decl(FILE *fp, node_t *node)
@@ -206,6 +219,8 @@ static void emit_compound_stmt(FILE *fp, node_t *node)
 
 static void emit_return(FILE *fp, node_t *node)
 {
+    assert(node && node->type == NODE_RETURN);
+
 }
 
 void emit(FILE *fp, node_t *node)
