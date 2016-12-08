@@ -141,7 +141,7 @@ static void emit_arith_binary(FILE *fp, node_t *node)
         if (node->binary_op == '-') {
             EMIT_INST(inst, size, "%s, %s", rcx[size], rax[size]);
         } else if (node->binary_op == '/' || node->binary_op == '%') {
-            EMIT("ctld");
+            EMIT("cltd");
             EMIT_INST(inst, size, "%s", rcx[size]);
             if (node->binary_op == '%')
                 EMIT_INST("mov", size, "%%edx, %s", rax[size]);
@@ -163,6 +163,28 @@ static void emit_log_binary(FILE *fp, node_t *node)
 
 static void emit_assign_binary(FILE *fp, node_t *node)
 {
+    int size;
+    node_t *lvalue;
+
+    assert(node && node->type == NODE_BINARY && node->binary_op == '=');
+    emit(fp, node->right);
+    size = node->ctype->size;
+    lvalue = node->left;
+    if (lvalue->type == NODE_VAR)
+        EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], lvalue->loffset);
+    else {
+        assert(lvalue->type == NODE_UNARY && lvalue->unary_op == '*');
+        PUSH("%%rax");
+        emit(fp, lvalue->operand);
+        POP("%%rcx");
+        EMIT_INST("mov", size, "%s, (%%rax)", rcx[size]);
+        EMIT_INST("mov", size, "%s, %s", rcx[size], rax[size]);
+        /*
+        EMIT_INST("mov", 8, "%%rax, %%rcx");
+        POP("%%rax");
+        EMIT_INST("mov", size, "%s, (%%rcx)", rax[size]);
+        */
+    }
 }
 
 static void emit_cmp_binary(FILE *fp, node_t *node)
@@ -190,8 +212,7 @@ static void emit_binary(FILE *fp, node_t *node)
         emit_log_binary(fp, node);
         break;
 
-    case '=': case PUNCT_IADD: case PUNCT_ISUB: case PUNCT_IMUL: case PUNCT_IDIV: case PUNCT_IMOD:
-    case PUNCT_ILSFT: case PUNCT_IRSFT: case PUNCT_IAND: case PUNCT_IOR: case PUNCT_IXOR:
+    case '=':
         emit_assign_binary(fp, node);
         break;
 
@@ -341,6 +362,13 @@ static void emit_var_decl(FILE *fp, node_t *node)
 
 static void emit_var_init(FILE *fp, node_t *node)
 {
+    int size;
+
+    assert(node && node->type == NODE_VAR_INIT);
+    node->left->type = NODE_VAR;
+    emit(fp, node->right);
+    size = node->left->ctype->size;
+    EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->left->loffset);
 }
 
 static vector_t *get_local_var(node_t *node)
