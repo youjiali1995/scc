@@ -660,7 +660,6 @@ static node_t *parse_additive_expr(parser_t *parser)
         else
             errorf("invalid operands to binary %c (have \'%s\' and \'%s\') in %s:%d\n",
                     token->ival, type2str(add->ctype), type2str(mul->ctype), _FILE_, _LINE_);
-        add = make_binary(ctype_int, token->ival, add, mul);
     }
     UNGET(token);
     return add;
