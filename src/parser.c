@@ -1,6 +1,5 @@
 #include <stdlib.h>
 #include <assert.h>
-#include <stdbool.h>
 #include "parser.h"
 #include "util.h"
 
@@ -202,7 +201,8 @@ static node_t *make_func_call(ctype_t *ctype, char *func_name, vector_t *args)
     node_t *node;
 
     NEW_NODE(node, NODE_FUNC_CALL);
-    node->ctype = ctype;
+    node->ctype = ctype->ret;
+    node->ctype->is_va = ctype->is_va;
     node->func_name = func_name;
     node->params = args;
     return node;
@@ -417,6 +417,19 @@ static vector_t *parse_arg_expr_list(parser_t *parser, node_t *func)
         if (!TRY_PUNCT(','))
             break;
     }
+    /* TODO: refactoring variable argument list */
+    if (func->ctype->is_va && TRY_PUNCT(',')) {
+        for (;;) {
+            if (is_punct(PEEK(), ',') || is_punct(PEEK(), ')') || is_punct(PEEK(), ';'))
+                errorf("expected expression before \'%c\' token in %s:%d\n", PEEK()->ival, _FILE_, _LINE_);
+            node_t *arg = parse_assign_expr(parser);
+            vector_append(args, arg);
+            if (is_punct(PEEK(), ')'))
+                break;
+            if (!TRY_PUNCT(','))
+                break;
+        }
+    }
     if (i < vector_len(types) - 1)
         errorf("too few arguments to function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
     else if (TRY_PUNCT(','))
@@ -467,7 +480,7 @@ static node_t *parse_postfix_expr(parser_t *parser)
             if (post->type != NODE_FUNC_DECL && post->type != NODE_FUNC_DEF)
                 errorf("called object is not a function or function pointer in %s:%d\n", _FILE_, _LINE_);
             vector_t *args = parse_arg_expr_list(parser, post);
-            post = make_func_call(post->ctype->ret, post->func_name, args);
+            post = make_func_call(post->ctype, post->func_name, args);
 
         } else {
             UNGET(token);
@@ -952,12 +965,15 @@ static node_t *parse_direct_decl(parser_t *parser, ctype_t *ctype)
     } else if ((token = NEXT())->type != TK_ID)
         errorf("expected identifier in %s:%d\n", _FILE_, _LINE_);
     if (TRY_PUNCT('(')) {
+        /* TODO: refactorying and parse variable argument list */
         size_t i;
         decl = calloc(1, sizeof(*decl));
         decl->type = NODE_FUNC_DECL;
         decl->func_name = token->sval;
         decl->ctype = make_ptr(NULL);
         decl->ctype->ret = ctype;
+        /* TODO: variable argument list */
+        decl->ctype->is_va = false;
         decl->params = parse_param_list(parser);
         if (decl->params) {
             decl->ctype->param_types = make_vector();
@@ -1248,6 +1264,7 @@ node_t *get_node(parser_t *parser)
 {
     if (!PEEK())
         return NULL;
+    /* TODO: global variable */
     return parse_func_def(parser);
 }
 
@@ -1258,6 +1275,7 @@ static node_t *make_puts(void)
     NEW_NODE(func_puts, NODE_FUNC_DEF);
     func_puts->ctype = make_ptr(NULL);
     func_puts->ctype->ret = ctype_int;
+    func_puts->ctype->is_va = false;
     func_puts->ctype->param_types = make_vector();
     vector_append(func_puts->ctype->param_types, make_ptr(ctype_char));
     func_puts->func_name = "puts";
@@ -1266,9 +1284,26 @@ static node_t *make_puts(void)
     return func_puts;
 }
 
+static node_t *make_printf(void)
+{
+    node_t *func_printf;
+
+    NEW_NODE(func_printf, NODE_FUNC_DEF);
+    func_printf->ctype = make_ptr(NULL);
+    func_printf->ctype->ret = ctype_int;
+    func_printf->ctype->is_va = true;
+    func_printf->ctype->param_types = make_vector();
+    vector_append(func_printf->ctype->param_types, make_ptr(ctype_char));
+    func_printf->func_name = "printf";
+    func_printf->params = NULL;
+    func_printf->func_body = NULL;
+    return func_printf;
+}
+
 static void builtin_init(dict_t *env)
 {
     dict_insert(env, "puts", make_puts(), true);
+    dict_insert(env, "printf", make_printf(), true);
 }
 
 void parser_init(parser_t *parser, lexer_t *lexer)

@@ -1,6 +1,7 @@
 #ifndef PARSER_H__
 #define PARSER_H__
 
+#include <stdbool.h>
 #include "lexer.h"
 #include "vector.h"
 #include "dict.h"
@@ -21,6 +22,8 @@ typedef struct ctype_t {
     struct ctype_t *ret;
     /* function parameter types */
     vector_t *param_types;
+    /* variable argument lists */
+    bool is_va;
 } ctype_t;
 
 extern ctype_t *ctype_void;
@@ -42,6 +45,7 @@ enum {
     NODE_FUNC_CALL,
     NODE_VAR_DECL,
     NODE_VAR_INIT,
+    NODE_VAR,
     NODE_COMPOUND_STMT,
     NODE_RETURN
 };
@@ -51,7 +55,7 @@ typedef struct node_t {
     ctype_t *ctype;
     union {
         /* int, char */
-        long ival;
+        int ival;
         /* double */
         double dval;
         /* string */
