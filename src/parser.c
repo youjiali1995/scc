@@ -62,28 +62,39 @@ static bool is_type(token_t *token)
     }
 }
 
-static bool is_assign_op(token_t *token)
+/* Return corresponding op of assign op, else return 0 */
+static int is_assign_op(token_t *token)
 {
     if (token->type != TK_PUNCT)
         return false;
     switch (token->ival) {
     case '=':
+        return '=';
     case PUNCT_IMUL:
+        return '*';
     case PUNCT_IDIV:
+        return '/';
     case PUNCT_IMOD:
+        return '%';
     case PUNCT_IADD:
+        return '+';
     case PUNCT_ISUB:
+        return '-';
     case PUNCT_ILSFT:
+        return PUNCT_LSFT;
     case PUNCT_IRSFT:
+        return PUNCT_RSFT;
     case PUNCT_IAND:
+        return '&';
     case PUNCT_IXOR:
+        return '^';
     case PUNCT_IOR:
-        return true;
+        return '|';
 
     default:
-        return false;
+        break;
     }
-    return false;
+    return 0;
 }
 
 static bool is_same_type(ctype_t *t, ctype_t *p)
@@ -106,7 +117,8 @@ static bool is_arith_type(ctype_t *type)
 
 static bool is_lvalue(node_t *node)
 {
-    if (node->type == NODE_VAR_DECL)
+    if (node->type == NODE_VAR_DECL
+            || (node->type == NODE_UNARY && node->unary_op == '*'))
         return true;
     return false;
 }
@@ -854,26 +866,55 @@ static node_t *parse_assign_expr(parser_t *parser)
     node_t *node;
     node_t *assign;
     token_t *token;
+    int op;
 
     node = parse_cond_expr(parser);
     if (node->type == NODE_BINARY || node->type == NODE_TERNARY)
         return node;
     token = NEXT();
-    if (!is_assign_op(token)) {
+    if (!(op = is_assign_op(token))) {
         UNGET(token);
         return node;
     }
     if (!is_lvalue(node))
         errorf("lvalue required as left operand of assignment in %s:%d\n", _FILE_, _LINE_);
+
     assign = parse_assign_expr(parser);
-    if (token->ival == '=') {
-        if (!is_same_type(node->ctype, assign->ctype))
-            errorf("assignment make %s from %s without a cast in %s:%d\n",
-                    type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
-    } else if (node->ctype != ctype_int || assign->ctype != ctype_int)
-        errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
-                punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
-    return make_binary(node->ctype, token->ival, node, assign);
+    if (op != '=') {
+        if (is_ptr(node->ctype)) {
+            /* ptr += int */
+            if (op == '+' && assign->ctype == ctype_int)
+                assign = make_binary(node->ctype, '+', node, assign);
+            /* ptr -= int */
+            else if (op == '-' && assign->ctype == ctype_int)
+                assign = make_binary(node->ctype, '-', node, assign);
+            /* ptr -= ptr */
+            else if (op == '-' && is_same_type(node->ctype, assign->ctype))
+                assign = make_binary(ctype_int, '-', node, assign);
+            else
+                errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
+                        punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
+        } else if (op == '+' || op == '-' || op == '*' || op == '/') {
+            if (!is_arith_type(node->ctype) || !is_arith_type(assign->ctype))
+                errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
+                        punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
+            if (op == '/' && is_null(assign))
+                errorf("division by zero in %s:%d\n", _FILE_, _LINE_);
+            assign = make_binary(node->ctype, op, node, assign);
+        } else {
+            /* %= &= ^= |= <<= >>= */
+            if (node->ctype != ctype_int || assign->ctype != ctype_int)
+                errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
+                        punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
+            if (op == '%' && is_null(assign))
+                errorf("division by zero in %s:%d\n", _FILE_, _LINE_);
+            assign = make_binary(node->ctype, op, node, assign);
+        }
+    }
+    if (!is_same_type(node->ctype, assign->ctype))
+        errorf("assignment make %s from %s without a cast in %s:%d\n",
+                type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
+    return make_binary(node->ctype, '=', node, assign);
 }
 
 /* expression:
