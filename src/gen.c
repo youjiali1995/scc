@@ -318,6 +318,11 @@ static void emit_func_call(FILE *fp, node_t *node)
         emit(fp, arg);
         EMIT_INST("mov", size, "%s, %s", rax[size], arg_regs[size][i]);
     }
+    /* TODO: %eax must be set to the number of floating point arguments
+     * Now set 0
+     */
+    if (node->ctype->is_va)
+        EMIT_INST("mov", 4, "$0, %s", rax[4]);
     /* size of stack frame is times of 16 bytes */
     if (offset % 16 != 0)
         EMIT("subq    $%d, %%rsp", align(offset, 16) - offset);
@@ -326,8 +331,12 @@ static void emit_func_call(FILE *fp, node_t *node)
 
 static void emit_var_decl(FILE *fp, node_t *node)
 {
-    assert(node && node->type == NODE_VAR_DECL);
-    EMIT_INST("mov", node->ctype->size, "-%d(%%rbp), %s", node->loffset, rax[node->ctype->size]);
+    assert(node && (node->type == NODE_VAR_DECL || node->type == NODE_VAR));
+    /* Avoid emit var to rax when decl */
+    if (node->type == NODE_VAR_DECL)
+        node->type = NODE_VAR;
+    else
+        EMIT_INST("mov", node->ctype->size, "-%d(%%rbp), %s", node->loffset, rax[node->ctype->size]);
 }
 
 static void emit_var_init(FILE *fp, node_t *node)
@@ -429,6 +438,7 @@ void emit(FILE *fp, node_t *node)
         emit_func_call(fp, node);
         break;
     case NODE_VAR_DECL:
+    case NODE_VAR:
         emit_var_decl(fp, node);
         break;
     case NODE_VAR_INIT:
