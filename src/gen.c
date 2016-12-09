@@ -62,12 +62,86 @@ static void emit_string(FILE *fp, node_t *node)
     EMIT_INST("mov", node->ctype->size, "$%s, %s", node->slabel, rax[node->ctype->size]);
 }
 
-static void emit_postfix(FILE *fp, node_t *node)
+static void emit_postfix_inc_dec(FILE *fp, node_t *node)
+{
+    char *inst;
+    int size;
+    int delta;
+
+    assert(node && node->type == NODE_POSTFIX);
+    emit(fp, node->operand);
+    inst = (node->unary_op == PUNCT_INC) ? "add" : "sub";
+    size = node->ctype->size;
+    delta = (node->operand->ctype->type == CTYPE_PTR) ? node->operand->ctype->ptr->size : 1;
+    EMIT_INST("mov", size, "%s, %s", rax[size], rcx[size]);
+    EMIT_INST(inst, size, "$%d, %s", delta, rcx[size]);
+    EMIT_INST("mov", size, "%s, -%d(%%rbp)", rcx[size], node->operand->loffset);
+}
+
+static void emit_prefix_inc_dec(FILE *fp, node_t *node)
+{
+    char *inst;
+    int size;
+    int delta;
+
+    assert(node && node->type == NODE_UNARY
+            && (node->unary_op == PUNCT_INC || node->unary_op == PUNCT_DEC));
+    emit(fp, node->operand);
+    inst = (node->unary_op == PUNCT_INC) ? "add" : "sub";
+    size = node->ctype->size;
+    delta = (node->operand->ctype->type == CTYPE_PTR) ? node->operand->ctype->ptr->size : 1;
+    EMIT_INST(inst, size, "$%d, %s", delta, rax[size]);
+    EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->operand->loffset);
+}
+
+static void emit_ref(FILE *fp, node_t *node)
+{
+}
+
+static void emit_deref(FILE *fp, node_t *node)
 {
 }
 
 static void emit_unary(FILE *fp, node_t *node)
 {
+    int size;
+
+    assert(node && node->type == NODE_UNARY);
+    switch(node->unary_op) {
+    case PUNCT_INC:
+    case PUNCT_DEC:
+        emit_prefix_inc_dec(fp, node);
+        break;
+
+    case '+':
+        break;
+
+    case '-':
+    case '~':
+        size = node->operand->ctype->size;
+        emit(fp, node->operand);
+        EMIT_INST(node->unary_op == '-' ? "neg" : "not", size, "%s", rax[size]);
+        break;
+
+    case '!':
+        size = node->operand->ctype->size;
+        emit(fp, node->operand);
+        EMIT_INST("cmp", size, "$0, %s", rax[size]);
+        EMIT("sete    %%al");
+        EMIT("movzbl  %%al, %%eax");
+        break;
+
+    case '&':
+        emit_ref(fp, node);
+        break;
+
+    case '*':
+        emit_deref(fp, node);
+        break;
+
+    default:
+        errorf("invalid unary op %c\n", node->unary_op);
+    }
 }
 
 static void emit_bit_binary(FILE *fp, node_t *node)
@@ -479,7 +553,7 @@ void emit(FILE *fp, node_t *node)
         emit_string(fp, node);
         break;
     case NODE_POSTFIX:
-        emit_postfix(fp, node);
+        emit_postfix_inc_dec(fp, node);
         break;
     case NODE_UNARY:
         emit_unary(fp, node);
