@@ -117,6 +117,7 @@ static bool is_arith_type(ctype_t *type)
 
 static bool is_lvalue(node_t *node)
 {
+    /* TODO: [] */
     if (node->type == NODE_VAR_DECL
             || (node->type == NODE_UNARY && node->unary_op == '*'))
         return true;
@@ -456,7 +457,7 @@ static vector_t *parse_arg_expr_list(parser_t *parser, node_t *func)
  *      postfix-expression ( argument-expression-list-opt )
  *      postfix-expression . identifier
  *      postfix-expression -> identifier
- *      postfix-expression +=
+ *      postfix-expression ++
  *      postfix-expression --
  *      ( type-name ) { initializer-list }
  *      ( type-name ) { initializer-list , }
@@ -466,9 +467,11 @@ static node_t *parse_postfix_expr(parser_t *parser)
     node_t *post;
     token_t *token;
 
+    /*
     if (TRY_PUNCT('(')) {
         errorf("TODO: compound literal in %s:%d\n", _FILE_, _LINE_);
     }
+    */
     post = parse_primary_expr(parser);
     for (token = NEXT();; token = NEXT()) {
         if (is_punct(token, '['))
@@ -530,32 +533,32 @@ static node_t *parse_unary_expr(parser_t *parser)
         unary = make_unary(expr->ctype, token->ival, expr);
 
     } else if (is_punct(token, '&')) {
-        expr = parse_unary_expr(parser);
-        if (!is_lvalue(expr))
+        expr = parse_cast_expr(parser);
+        if (!is_lvalue(expr) && expr->type != NODE_FUNC_DEF && expr->type != NODE_FUNC_DECL)
             errorf("lvalue required as unary \'&\' operand in %s:%d\n", _FILE_, _LINE_);
         unary = make_unary(make_ptr(expr->ctype), '&', expr);
 
     } else if (is_punct(token, '*')) {
-        expr = parse_unary_expr(parser);
+        expr = parse_cast_expr(parser);
         if (!is_ptr(expr->ctype))
             errorf("invalid type argument of unary \'*\' (have \'%s\') in %s:%d\n",
                     type2str(expr->ctype), _FILE_, _LINE_);
         unary = make_unary(expr->ctype->ptr, '*', expr);
 
     } else if (is_punct(token, '+') || is_punct(token, '-')) {
-        expr = parse_unary_expr(parser);
+        expr = parse_cast_expr(parser);
         if (!is_arith_type(expr->ctype))
             errorf("wrong type argument to unary \'%c\' in %s:%d\n", token->ival, _FILE_, _LINE_);
         unary = make_unary(expr->ctype, token->ival, expr);
 
     } else if (is_punct(token, '~')) {
-        expr = parse_unary_expr(parser);
+        expr = parse_cast_expr(parser);
         if (expr->ctype != ctype_int)
             errorf("wrong type argument to bit-complement in %s:%d\n", _FILE_, _LINE_);
         unary = make_unary(expr->ctype, '~', expr);
 
     } else if (is_punct(token, '!')) {
-        expr = parse_unary_expr(parser);
+        expr = parse_cast_expr(parser);
         unary = make_unary(ctype_int, '!', expr);
 
     /* TODO: sizeof */
@@ -600,9 +603,19 @@ static ctype_t *parse_type_name(parser_t *parser)
  */
 static node_t *parse_cast_expr(parser_t *parser)
 {
-    if (TRY_PUNCT('(')) {
+    return parse_unary_expr(parser);
+
+
+    /* TODO: need 2 unget */
+    token_t *token = NEXT();
+
+    if (is_punct(token, '(') && is_type(PEEK())) {
         node_t *cast;
-        /* TODO */
+        /* TODO:
+         *      1. ( type-name ) cast-expression
+         *      2. ( type-name ) { initializer-list }
+         *      3. ( expression )
+         */
         ctype_t *ctype = parse_type_name(parser);
         EXPECT_PUNCT(')');
         if (ctype == ctype_void)
@@ -616,6 +629,7 @@ static node_t *parse_cast_expr(parser_t *parser)
         cast->ctype = ctype;
         return cast;
     }
+    UNGET(token);
     return parse_unary_expr(parser);
 }
 
@@ -723,7 +737,7 @@ static node_t *parse_relational_expr(parser_t *parser)
                     || (is_ptr(shift->ctype) && is_null(rel))))
             errorf("comparison between %s and %s in %s:%d\n",
                     type2str(rel->ctype), type2str(shift->ctype), _FILE_, _LINE_);
-        make_binary(ctype_int, token->ival, rel, shift);
+        rel = make_binary(ctype_int, token->ival, rel, shift);
     }
     UNGET(token);
     return rel;
