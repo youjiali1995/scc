@@ -94,12 +94,33 @@ static void emit_prefix_inc_dec(FILE *fp, node_t *node)
     EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->operand->loffset);
 }
 
-static void emit_ref(FILE *fp, node_t *node)
+static void emit_addr(FILE *fp, node_t *node)
 {
+    assert(node && node->type == NODE_UNARY && node->unary_op == '&');
+    switch (node->operand->type) {
+    case NODE_VAR:
+        EMIT_INST("lea", 8, "-%d(%%rbp), %s", node->operand->loffset, rax[8]);
+        break;
+
+    case NODE_UNARY:
+        /* Both & and * are ommited */
+        assert(node->operand->unary_op == '*');
+        emit(fp, node->operand->operand);
+        break;
+    /* TODO: array */
+    default:
+        errorf("invalid operand of \'&\'\n");
+    }
 }
 
 static void emit_deref(FILE *fp, node_t *node)
 {
+    int size;
+
+    assert(node && node->type == NODE_UNARY && node->unary_op == '*');
+    emit(fp, node->operand);
+    size = node->operand->ctype->size;
+    EMIT_INST("mov", size, "(%s), %s", rax[8], rax[size]);
 }
 
 static void emit_unary(FILE *fp, node_t *node)
@@ -132,7 +153,7 @@ static void emit_unary(FILE *fp, node_t *node)
         break;
 
     case '&':
-        emit_ref(fp, node);
+        emit_addr(fp, node);
         break;
 
     case '*':
