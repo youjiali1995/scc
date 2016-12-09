@@ -20,7 +20,7 @@ static char *callee_saves[] = {"%rbx", "%r12", "%r13", "%r14", "%r15", NULL};
 static int offset;
 
 #define EMIT(fmt, ...) fprintf(fp, "\t" fmt "\n", ##__VA_ARGS__)
-#define EMIT_LABEL(fmt, ...) fprintf(fp, fmt ":\n", ##__VA_ARGS__)
+#define EMIT_LABEL(label) fprintf(fp, "%s:\n", label)
 #define EMIT_INST(inst, size, fmt, ...) \
     fprintf(fp, "\t%s%c    " fmt "\n", inst, suffix[size], ##__VA_ARGS__)
 
@@ -41,6 +41,12 @@ static int align(int m, int n)
     return mod == 0 ? m : m - mod + n;
 }
 
+static char *make_label(void)
+{
+    static int n = 0;
+    return format(".L%d", n++);
+}
+
 static void emit_compound_stmt(FILE *fp, node_t *node);
 
 static void emit_constant(FILE *fp, node_t *node)
@@ -56,7 +62,7 @@ static void emit_string(FILE *fp, node_t *node)
     assert(node && node->type == NODE_STRING);
     EMIT(".section\t.rodata");
     node->slabel = format(".LC%d", n++);
-    EMIT_LABEL("%s", node->slabel);
+    EMIT_LABEL(node->slabel);
     EMIT(".string \"%s\"", unescape(node->sval));
     EMIT(".text");
     EMIT_INST("mov", node->ctype->size, "$%s, %s", node->slabel, rax[node->ctype->size]);
@@ -252,8 +258,50 @@ static void emit_arith_binary(FILE *fp, node_t *node)
     }
 }
 
-static void emit_log_binary(FILE *fp, node_t *node)
+static void emit_log_and_binary(FILE *fp, node_t *node)
 {
+    int size;
+    char *label;
+
+    assert(node && node->type == NODE_BINARY && node->binary_op == PUNCT_AND);
+    emit(fp, node->left);
+    size = node->left->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    label = make_label();
+    EMIT("je      %s", label);
+
+    emit(fp, node->right);
+    size = node->right->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    EMIT("je      %s", label);
+
+    size = node->ctype->size;
+    EMIT_INST("mov", size, "$1, %s", rax[size]);
+    EMIT_LABEL(label);
+}
+
+static void emit_log_or_binary(FILE *fp, node_t *node)
+{
+    int size;
+    char *label1, *label2;
+
+    assert(node && node->type == NODE_BINARY && node->binary_op == PUNCT_OR);
+    emit(fp, node->left);
+    size = node->left->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    label1 = make_label();
+    EMIT("jne     %s", label1);
+
+    emit(fp, node->right);
+    size = node->left->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    label2 = make_label();
+    EMIT("je      %s", label2);
+
+    EMIT_LABEL(label1);
+    size = node->ctype->size;
+    EMIT_INST("mov", size, "$1, %s", rax[size]);
+    EMIT_LABEL(label2);
 }
 
 static void emit_assign_binary(FILE *fp, node_t *node)
@@ -343,8 +391,11 @@ static void emit_binary(FILE *fp, node_t *node)
         emit_arith_binary(fp, node);
         break;
 
-    case PUNCT_AND: case PUNCT_OR:
-        emit_log_binary(fp, node);
+    case PUNCT_AND:
+        emit_log_and_binary(fp, node);
+        break;
+    case PUNCT_OR:
+        emit_log_or_binary(fp, node);
         break;
 
     case '=':
@@ -407,7 +458,7 @@ static void emit_func_prologue(FILE *fp, node_t *node)
     EMIT(".text");
     EMIT(".globl  %s", node->func_name);
     EMIT(".type   %s, @function", node->func_name);
-    EMIT_LABEL("%s", node->func_name);
+    EMIT_LABEL(node->func_name);
     PUSH("%%rbp");
     EMIT_INST("mov", 8, "%%rsp, %%rbp");
 
