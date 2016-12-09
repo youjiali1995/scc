@@ -127,7 +127,7 @@ static void emit_arith_binary(FILE *fp, node_t *node)
         break;
 
     default:
-        errorf("invalid arith binary op %c", node->binary_op);
+        errorf("invalid arith binary op %c\n", node->binary_op);
     }
 
     size = node->ctype->size;
@@ -189,10 +189,50 @@ static void emit_assign_binary(FILE *fp, node_t *node)
 
 static void emit_cmp_binary(FILE *fp, node_t *node)
 {
+    char *op;
+    int size;
+
+    assert(node && node->type == NODE_BINARY);
+    switch (node->binary_op) {
+    case '<':
+        op = "setl";
+        break;
+    case '>':
+        op = "setg";
+        break;
+    case PUNCT_LE:
+        op = "setle";
+        break;
+    case PUNCT_GE:
+        op = "setge";
+        break;
+    case PUNCT_EQ:
+        op = "sete";
+        break;
+    case PUNCT_NE:
+        op = "setne";
+        break;
+
+    default:
+        errorf("invalid cmp binary op %c\n", node->binary_op);
+        break;
+    }
+
+    emit(fp, node->left);
+    PUSH("%%rax");
+    emit(fp, node->right);
+    POP("%%rcx");
+    size = node->left->ctype->size;
+    EMIT_INST("cmp", size, "%s, %s", rax[size], rcx[size]);
+    EMIT("%s    %%al", op);
+    EMIT("movzbl  %%al, %%eax");
 }
 
 static void emit_comma_binary(FILE *fp, node_t *node)
 {
+    assert(node && node->type == NODE_BINARY && node->binary_op == ',');
+    emit(fp, node->left);
+    emit(fp, node->right);
 }
 
 static void emit_binary(FILE *fp, node_t *node)
