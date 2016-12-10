@@ -423,14 +423,107 @@ static void emit_ternary(FILE *fp, node_t *node)
 
 static void emit_if(FILE *fp, node_t *node)
 {
+    int size;
+    char *label;
+
+    assert(node && node->type == NODE_IF);
+    /*      if (!cond)
+     *          goto false;
+     *      then;
+     *      goto done;
+     * false:
+     *      else;
+     * done:
+     */
+    emit(fp, node->cond);
+    size = node->cond->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    label = make_label();
+    EMIT("je      %s", label);
+    emit(fp, node->then);
+    if (node->els) {
+        char *done = make_label();
+        EMIT("jmp     %s", done);
+        EMIT_LABEL(label);
+        emit(fp, node->els);
+        EMIT_LABEL(done);
+    } else
+        EMIT_LABEL(label);
 }
 
 static void emit_for(FILE *fp, node_t *node)
 {
+    int size;
+    char *test, *loop;
+
+    assert(node && node->type == NODE_FOR);
+    /*      init;
+     *      goto test;
+     * loop:
+     *      body;
+     *      step;
+     * test:
+     *      if (cond)
+     *          goto loop;
+     */
+    emit(fp, node->for_init);
+    test = make_label();
+    EMIT("jmp     %s", test);
+    loop = make_label();
+    EMIT_LABEL(loop);
+    emit(fp, node->for_body);
+    emit(fp, node->for_step);
+    EMIT_LABEL(test);
+    emit(fp, node->for_cond);
+    size = node->for_cond->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    EMIT("jne     %s", loop);
 }
 
 static void emit_while(FILE *fp, node_t *node)
 {
+    int size;
+    char *loop, *done;
+
+    assert(node && node->type == NODE_WHILE);
+    /*
+     * loop:
+     *      if (!cond)
+     *          goto end;
+     *      body;
+     *      goto loop;
+     * done:
+     *
+    loop = make_label();
+    EMIT_LABEL(loop);
+    emit(fp, node->while_cond);
+    size = node->while_cond->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    done = make_label();
+    EMIT("je      %s", done);
+    emit(fp, node->while_body);
+    EMIT("jmp     %s", loop);
+    EMIT_LABEL(done);
+    */
+
+    /*
+     *      goto test;
+     * loop:
+     *      body;
+     * test:
+     *      if (cond)
+     *          goto loop;
+     */
+    done = make_label();
+    EMIT("jmp     %s", done);
+    loop = make_label();
+    EMIT_LABEL(loop);
+    emit(fp, node->while_body);
+    EMIT_LABEL(done);
+    emit(fp, node->while_cond);
+    size = node->while_cond->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    EMIT("jne     %s", loop);
 }
 
 
@@ -490,7 +583,7 @@ static void emit_func_def(FILE *fp, node_t *node)
     emit_ret(fp);
 }
 
-/*
+/* TODO: used to profile
 static void mov_var(FILE *fp, node_t *node, char *reg)
 {
     int size;
