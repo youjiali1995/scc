@@ -419,6 +419,22 @@ static void emit_binary(FILE *fp, node_t *node)
 
 static void emit_ternary(FILE *fp, node_t *node)
 {
+    int size;
+    char *els;
+    char *done;
+
+    assert(node && node->type == NODE_TERNARY);
+    emit(fp, node->cond);
+    size = node->cond->ctype->size;
+    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    els = make_label();
+    EMIT("je      %s", els);
+    emit(fp, node->then);
+    done = make_label();
+    EMIT("jmp     %s", done);
+    EMIT_LABEL(els);
+    emit(fp, node->els);
+    EMIT_LABEL(done);
 }
 
 static void emit_if(FILE *fp, node_t *node)
