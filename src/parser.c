@@ -393,6 +393,7 @@ static node_t *parse_primary_expr(parser_t *parser)
         primary = make_string(token->sval);
         break;
     default:
+        errorf("expected expression in %s:%d\n", _FILE_, _LINE_);
         break;
     }
     return primary;
