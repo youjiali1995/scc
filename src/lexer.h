@@ -21,6 +21,7 @@ enum {
     KW_INT,
     KW_DOUBLE,
     KW_FOR,
+    KW_DO,
     KW_WHILE,
     KW_IF,
     KW_ELSE,

@@ -15,6 +15,7 @@ int main(void)
         "NODE_TERNARY",
         "NODE_IF",
         "NODE_FOR",
+        "NODE_DO_WHILE",
         "NODE_WHILE",
         "NODE_FUNC_DECL",
         "NODE_FUNC_DEF",

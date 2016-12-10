@@ -70,6 +70,7 @@ int is_keyword(const char *s)
         dict_insert(kw, "int", (void *) KW_INT, 1);
         dict_insert(kw, "double", (void *) KW_DOUBLE, 1);
         dict_insert(kw, "for", (void *) KW_FOR, 1);
+        dict_insert(kw, "do", (void *) KW_DO, 1);
         dict_insert(kw, "while", (void *) KW_WHILE, 1);
         dict_insert(kw, "if", (void *) KW_IF, 1);
         dict_insert(kw, "else", (void *) KW_ELSE, 1);

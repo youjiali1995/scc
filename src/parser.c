@@ -15,6 +15,7 @@ ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
 #define NEXT() (get_token(parser->lexer))
 #define PEEK() (peek_token(parser->lexer))
 #define UNGET(token) (unget_token(token, parser->lexer))
+/* TODO: concrete error message */
 #define EXPECT_PUNCT(punct) \
     do { \
         token_t *token = NEXT(); \
@@ -23,11 +24,12 @@ ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
     } while (0)
 #define TRY_PUNCT(punct) \
     (is_punct(PEEK(), punct) ? (NEXT(), true) : false)
+/* TODO: concrete error message */
 #define EXPECT_KW(keyword) \
     do { \
         token_t *token = NEXT(); \
         if (token->type != TK_KEYWORD || token->ival != keyword) \
-            errorf("expected keyword %c in %s:%d\n", keyword, _FILE_, _LINE_); \
+            errorf("expected keyword \'%d\' in %s:%d\n", keyword, _FILE_, _LINE_); \
     } while (0)
 #define TRY_KW(keyword) \
     (is_keyword(PEEK(), keyword) ? (NEXT(), true) : false)
@@ -327,6 +329,16 @@ static node_t *make_for(node_t *init, node_t *cond, node_t *step, node_t *body)
     node->for_cond = cond;
     node->for_step = step;
     node->for_body = body;
+    return node;
+}
+
+static node_t *make_do_while(node_t *cond, node_t *body)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_DO_WHILE);
+    node->while_cond = cond;
+    node->while_body = body;
     return node;
 }
 
@@ -1176,6 +1188,25 @@ static node_t *parse_for_stmt(parser_t *parser)
     return make_for(init, cond, step, body);
 }
 
+/* iteration-statement
+ *      do statement while ( expression ) ;
+ */
+static node_t *parse_do_while_stmt(parser_t *parser)
+{
+    node_t *body;
+    node_t *cond;
+
+    body = parse_stmt(parser);
+    EXPECT_KW(KW_WHILE);
+    EXPECT_PUNCT('(');
+    if (TRY_PUNCT(')'))
+        errorf("expected expression before \')\' token in %s:%d\n", _FILE_, _LINE_);
+    cond = parse_expr(parser);
+    EXPECT_PUNCT(')');
+    EXPECT_PUNCT(';');
+    return make_do_while(cond, body);
+}
+
 /* iteration-statement:
  *      while ( expression ) statement
  */
@@ -1185,6 +1216,8 @@ static node_t *parse_while_stmt(parser_t *parser)
     node_t *body;
 
     EXPECT_PUNCT('(');
+    if (TRY_PUNCT(')'))
+        errorf("expected expression before \')\' token in %s:%d\n", _FILE_, _LINE_);
     cond = parse_expr(parser);
     EXPECT_PUNCT(')');
     body = parse_stmt(parser);
@@ -1266,6 +1299,8 @@ static node_t *parse_stmt(parser_t *parser)
         }
         case KW_FOR:
             return parse_for_stmt(parser);
+        case KW_DO:
+            return parse_do_while_stmt(parser);
         case KW_WHILE:
             return parse_while_stmt(parser);
         case KW_IF:

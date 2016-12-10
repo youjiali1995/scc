@@ -39,6 +39,7 @@ enum {
     NODE_TERNARY, /* ? : */
     NODE_IF,
     NODE_FOR,
+    NODE_DO_WHILE,
     NODE_WHILE,
     NODE_FUNC_DECL,
     NODE_FUNC_DEF,
@@ -105,7 +106,7 @@ typedef struct node_t {
             struct node_t *for_step;
             struct node_t *for_body;
         };
-        /* while */
+        /* while/do while */
         struct {
             struct node_t *while_cond;
             struct node_t *while_body;

@@ -13,6 +13,7 @@ int main(void)
         "int",
         "double",
         "for",
+        "do",
         "while",
         "if",
         "else",

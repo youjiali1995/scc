@@ -474,8 +474,30 @@ static void emit_for(FILE *fp, node_t *node)
     emit(fp, node->for_body);
     emit(fp, node->for_step);
     EMIT_LABEL(test);
-    emit(fp, node->for_cond);
-    size = node->for_cond->ctype->size;
+    if (node->for_cond) {
+        emit(fp, node->for_cond);
+        size = node->for_cond->ctype->size;
+        EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+        EMIT("jne     %s", loop);
+    } else
+        EMIT("jmp     %s", loop);
+}
+static void emit_do_while(FILE *fp, node_t *node)
+{
+    int size;
+    char *loop;
+
+    assert(node && node->type == NODE_DO_WHILE);
+    /* loop:
+     *      body;
+     *      if (cond)
+     *          goto loop;
+     */
+    loop = make_label();
+    EMIT_LABEL(loop);
+    emit(fp, node->while_body);
+    emit(fp, node->while_cond);
+    size = node->while_cond->ctype->size;
     EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
     EMIT("jne     %s", loop);
 }
@@ -486,8 +508,7 @@ static void emit_while(FILE *fp, node_t *node)
     char *loop, *done;
 
     assert(node && node->type == NODE_WHILE);
-    /*
-     * loop:
+    /* loop:
      *      if (!cond)
      *          goto end;
      *      body;
@@ -506,8 +527,7 @@ static void emit_while(FILE *fp, node_t *node)
     EMIT_LABEL(done);
     */
 
-    /*
-     *      goto test;
+    /*      goto test;
      * loop:
      *      body;
      * test:
@@ -656,6 +676,9 @@ static vector_t *get_local_var(node_t *node)
     vector_t *vars;
 
     assert(node && node->type == NODE_COMPOUND_STMT);
+    if (!node->stmts)
+        return NULL;
+
     vars = make_vector();
     for (i = 0; i < vector_len(node->stmts); i++) {
         node_t *expr = vector_get(node->stmts, i);
@@ -735,6 +758,9 @@ void emit(FILE *fp, node_t *node)
     case NODE_FOR:
         emit_for(fp, node);
         break;
+    case NODE_DO_WHILE:
+        emit_do_while(fp, node);
+        break;
     case NODE_WHILE:
         emit_while(fp, node);
         break;
@@ -759,6 +785,7 @@ void emit(FILE *fp, node_t *node)
         break;
 
     default:
+        errorf("invalid node type\n");
         break;
     }
 }
