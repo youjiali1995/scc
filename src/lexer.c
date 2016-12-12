@@ -65,16 +65,17 @@ int is_keyword(const char *s)
 
     if (!kw) {
         kw = make_dict(NULL);
-        dict_insert(kw, "void", (void *) KW_VOID, 1);
-        dict_insert(kw, "char", (void *) KW_CHAR, 1);
-        dict_insert(kw, "int", (void *) KW_INT, 1);
-        dict_insert(kw, "double", (void *) KW_DOUBLE, 1);
-        dict_insert(kw, "for", (void *) KW_FOR, 1);
-        dict_insert(kw, "do", (void *) KW_DO, 1);
-        dict_insert(kw, "while", (void *) KW_WHILE, 1);
-        dict_insert(kw, "if", (void *) KW_IF, 1);
-        dict_insert(kw, "else", (void *) KW_ELSE, 1);
-        dict_insert(kw, "return", (void *) KW_RETURN ,1);
+        dict_insert(kw, "void", (void *) KW_VOID, true);
+        dict_insert(kw, "char", (void *) KW_CHAR, true);
+        dict_insert(kw, "int", (void *) KW_INT, true);
+        dict_insert(kw, "float", (void *) KW_FLOAT, true);
+        dict_insert(kw, "double", (void *) KW_DOUBLE, true);
+        dict_insert(kw, "for", (void *) KW_FOR, true);
+        dict_insert(kw, "do", (void *) KW_DO, true);
+        dict_insert(kw, "while", (void *) KW_WHILE, true);
+        dict_insert(kw, "if", (void *) KW_IF, true);
+        dict_insert(kw, "else", (void *) KW_ELSE, true);
+        dict_insert(kw, "return", (void *) KW_RETURN, true);
     }
     /* triky */
     ret = (long) dict_lookup(kw, s);
@@ -269,7 +270,7 @@ static token_t *lex_id(lexer_t *lexer, int c)
 }
 
 /* Read a number literal.
- * It only supports int and double. Different base numbers are not supported.
+ * It only supports int, float and double. Different base numbers are not supported.
  */
 static token_t *lex_number(lexer_t *lexer, char c)
 {
@@ -280,6 +281,8 @@ static token_t *lex_number(lexer_t *lexer, char c)
     PUTC(num, c);
     for (c = get_c(lexer); isdigit(c); c = get_c(lexer))
         PUTC(num, c);
+    if (c == 'f')
+        errorf("invalid suffix \"f\" on integer constant int %s:%d:%d\n", lexer->fname, lexer->line, lexer->column);
     if (c == '.') {
         PUTC(num, c);
         c = get_c(lexer);
@@ -300,7 +303,10 @@ static token_t *lex_number(lexer_t *lexer, char c)
         for (; isdigit(c); c = get_c(lexer))
             PUTC(num, c);
     }
-    unget_c(c, lexer);
+    if (c == 'f' || c == 'F')
+        PUTC(num, c);
+    else
+        unget_c(c, lexer);
 
     SET_STRING(num, s);
     free_buffer(num);

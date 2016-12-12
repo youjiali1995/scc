@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <string.h>
 #include "gen.h"
 #include "util.h"
 
@@ -35,33 +36,86 @@ static int offset;
         offset -= 8; \
     } while (0)
 
+#define PUSH_XMM(n) \
+    do { \
+        EMIT("subq    $8, %%rsp"); \
+        EMIT("movsd   %%xmm%d, (%%rsp)", n); \
+        offset += 8; \
+    } while (0)
+#define POP_XMM(n) \
+    do { \
+        EMIT("movsd   (%%rsp), %%xmm%d", n); \
+        EMIT("addq    $8, %%rsp"); \
+        offset -= 8; \
+    } while (0)
+
+static bool is_float(ctype_t *ctype)
+{
+    if (ctype == ctype_float || ctype == ctype_double)
+        return true;
+    return false;
+}
+
 static int align(int m, int n)
 {
     int mod = m % n;
     return mod == 0 ? m : m - mod + n;
 }
 
-static char *make_label(void)
+static char *make_jump_label(void)
 {
     static int n = 0;
     return format(".L%d", n++);
 }
 
+static char *make_data_label(void)
+{
+    static int n = 0;
+    return format(".LC%d", n++);
+}
+
 static void emit_compound_stmt(FILE *fp, node_t *node);
+static void emit_assign(FILE *fp, node_t *dst, char *src);
+static void emit_cmp_0(FILE *fp, node_t *node);
 
 static void emit_constant(FILE *fp, node_t *node)
 {
+    int size;
+    union {
+        int i;
+        long l;
+        float f;
+        double d;
+    } s;
+
     assert(node && node->type == NODE_CONSTANT);
-    EMIT_INST("mov", node->ctype->size, "$%d, %s", node->ival, rax[node->ctype->size]);
+    size = node->ctype->size;
+    if (node->ctype == ctype_int) {
+        EMIT_INST("mov", size, "$%ld, %s", node->ival, rax[size]);
+    } else {
+        EMIT(".section\t.rodata");
+        EMIT(".align %d", node->ctype->size);
+        node->flabel = make_data_label();
+        EMIT_LABEL(node->flabel);
+        if (node->ctype == ctype_float) {
+            s.f = node->fval;
+            EMIT(".long   %d", s.i);
+            EMIT(".text");
+            EMIT("movss   %s(%%rip), %%xmm0", node->flabel);
+        } else {
+            s.d = node->fval;
+            EMIT(".quad   %ld", s.l);
+            EMIT(".text");
+            EMIT("movsd   %s(%%rip), %%xmm0", node->flabel);
+        }
+    }
 }
 
 static void emit_string(FILE *fp, node_t *node)
 {
-    static int n = 0;
-
     assert(node && node->type == NODE_STRING);
     EMIT(".section\t.rodata");
-    node->slabel = format(".LC%d", n++);
+    node->slabel = make_data_label();
     EMIT_LABEL(node->slabel);
     EMIT(".string \"%s\"", unescape(node->sval));
     EMIT(".text");
@@ -81,7 +135,7 @@ static void emit_postfix_inc_dec(FILE *fp, node_t *node)
     delta = (node->operand->ctype->type == CTYPE_PTR) ? node->operand->ctype->ptr->size : 1;
     EMIT_INST("mov", size, "%s, %s", rax[size], rcx[size]);
     EMIT_INST(inst, size, "$%d, %s", delta, rcx[size]);
-    EMIT_INST("mov", size, "%s, -%d(%%rbp)", rcx[size], node->operand->loffset);
+    emit_assign(fp, node->operand, "%rcx");
 }
 
 static void emit_prefix_inc_dec(FILE *fp, node_t *node)
@@ -90,14 +144,84 @@ static void emit_prefix_inc_dec(FILE *fp, node_t *node)
     int size;
     int delta;
 
-    assert(node && node->type == NODE_UNARY
+    assert(node && node->ctype == ctype_int && node->type == NODE_UNARY
             && (node->unary_op == PUNCT_INC || node->unary_op == PUNCT_DEC));
     emit(fp, node->operand);
     inst = (node->unary_op == PUNCT_INC) ? "add" : "sub";
     size = node->ctype->size;
     delta = (node->operand->ctype->type == CTYPE_PTR) ? node->operand->ctype->ptr->size : 1;
     EMIT_INST(inst, size, "$%d, %s", delta, rax[size]);
-    EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->operand->loffset);
+    emit_assign(fp, node->operand, "%rax");
+}
+
+static char *get_float1_label(FILE *fp, ctype_t *ctype)
+{
+    static char *f1, *d1;
+
+    assert(ctype == ctype_float || ctype == ctype_double);
+    if (ctype == ctype_float) {
+        if (!f1) {
+            union {
+                int i;
+                float f;
+            } s;
+            s.f = 1.0f;
+            f1 = make_data_label();
+            EMIT(".section\t.rodata");
+            EMIT_LABEL(f1);
+            EMIT(".long   %d", s.i);
+            EMIT(".text");
+        }
+        return f1;
+    } else {
+        if (!d1) {
+            union {
+                long l;
+                double d;
+            } s;
+            s.d = 1.0;
+            d1 = make_data_label();
+            EMIT(".section\t.rodata");
+            EMIT_LABEL(d1);
+            EMIT(".quad   %ld", s.l);
+            EMIT(".text");
+        }
+        return d1;
+    }
+}
+
+static void emit_float_postfix_inc_dec(FILE *fp, node_t *node)
+{
+    char *inst, *label;
+    char suffix;
+
+    assert(node && node->type == NODE_POSTFIX);
+    suffix = (node->ctype == ctype_float) ? 's' : 'd';
+    inst = (node->unary_op == PUNCT_INC) ? "adds" : "subs";
+    emit(fp, node->operand);
+    label = get_float1_label(fp, node->ctype);
+    PUSH_XMM(0);
+    EMIT("movs%c   %s(%%rip), %%xmm1", suffix, label);
+    EMIT("%s%c   %%xmm1, %%xmm0", inst, suffix);
+    emit_assign(fp, node->operand, "%xmm0");
+    POP_XMM(0);
+
+}
+
+static void emit_float_prefix_inc_dec(FILE *fp, node_t *node)
+{
+    char *inst, *label;
+    char suffix;
+
+    assert(node && (node->ctype == ctype_float || node->ctype == ctype_double)
+            && node->type == NODE_UNARY && (node->unary_op == PUNCT_INC || node->unary_op == PUNCT_DEC));
+    suffix = (node->ctype == ctype_float) ? 's' : 'd';
+    inst = (node->unary_op == PUNCT_INC) ? "adds" : "subs";
+    emit(fp, node->operand);
+    label = get_float1_label(fp, node->ctype);
+    EMIT("movs%c   %s(%%rip), %%xmm1", suffix, label);
+    EMIT("%s%c   %%xmm1, %%xmm0", inst, suffix);
+    emit_assign(fp, node->operand, "%xmm0");
 }
 
 static void emit_addr(FILE *fp, node_t *node)
@@ -105,7 +229,7 @@ static void emit_addr(FILE *fp, node_t *node)
     assert(node && node->type == NODE_UNARY && node->unary_op == '&');
     switch (node->operand->type) {
     case NODE_VAR:
-        EMIT_INST("lea", 8, "-%d(%%rbp), %s", node->operand->loffset, rax[8]);
+        EMIT_INST("lea", node->ctype->size, "-%d(%%rbp), %s", node->operand->loffset, rax[node->ctype->size]);
         break;
 
     case NODE_UNARY:
@@ -121,12 +245,55 @@ static void emit_addr(FILE *fp, node_t *node)
 
 static void emit_deref(FILE *fp, node_t *node)
 {
-    int size;
+    ctype_t *ctype;
 
     assert(node && node->type == NODE_UNARY && node->unary_op == '*');
     emit(fp, node->operand);
-    size = node->operand->ctype->size;
-    EMIT_INST("mov", size, "(%s), %s", rax[8], rax[size]);
+    ctype = node->ctype;
+    if (ctype != ctype_float && ctype != ctype_double) {
+        EMIT_INST("mov", ctype->size, "(%s), %s", rax[node->operand->ctype->size], rax[ctype->size]);
+    } else {
+        char *inst = (ctype == ctype_float) ? "movss" : "movsd";
+        EMIT("%s   (%s), %%xmm0", inst, rax[node->operand->ctype->size]);
+    }
+}
+
+static void emit_float_neg(FILE *fp, node_t *node)
+{
+    static char *f, *d;
+    char *label, suffix;
+
+    assert(node && node->type == NODE_UNARY && node->unary_op == '-');
+    if (node->ctype == ctype_float) {
+        if (!f) {
+            EMIT(".section\t.rodata");
+            EMIT(".align 16");
+            f = make_data_label();
+            EMIT_LABEL(f);
+            EMIT(".long   2147483648");
+            EMIT(".long   0");
+            EMIT(".long   0");
+            EMIT(".long   0");
+        }
+        label = f;
+        suffix = 's';
+    } else {
+        if (!d) {
+            EMIT(".section\t.rodata");
+            EMIT(".align 16");
+            d = make_data_label();
+            EMIT_LABEL(d);
+            EMIT(".long   0");
+            EMIT(".long   -2147483648");
+            EMIT(".long   0");
+            EMIT(".long   0");
+        }
+        label = d;
+        suffix = 'd';
+    }
+    emit(fp, node->operand);
+    EMIT("movs%c   %s(%%rip), %%xmm1", suffix, label);
+    EMIT("xorp%c   %%xmm1, %%xmm0", suffix);
 }
 
 static void emit_unary(FILE *fp, node_t *node)
@@ -137,13 +304,21 @@ static void emit_unary(FILE *fp, node_t *node)
     switch(node->unary_op) {
     case PUNCT_INC:
     case PUNCT_DEC:
-        emit_prefix_inc_dec(fp, node);
+        if (is_float(node->ctype))
+            emit_float_prefix_inc_dec(fp, node);
+        else
+            emit_prefix_inc_dec(fp, node);
         break;
 
     case '+':
         break;
 
     case '-':
+        if (is_float(node->ctype)) {
+            emit_float_neg(fp, node);
+            break;
+        }
+        /* fall through */
     case '~':
         size = node->operand->ctype->size;
         emit(fp, node->operand);
@@ -151,10 +326,8 @@ static void emit_unary(FILE *fp, node_t *node)
         break;
 
     case '!':
-        size = node->operand->ctype->size;
-        emit(fp, node->operand);
-        EMIT_INST("cmp", size, "$0, %s", rax[size]);
-        EMIT("sete    %%al");
+        emit_cmp_0(fp, node->operand);
+        EMIT("%s    %%al", is_float(node->operand->ctype) ? "setnp" : "sete");
         EMIT("movzbl  %%al, %%eax");
         break;
 
@@ -258,102 +431,195 @@ static void emit_arith_binary(FILE *fp, node_t *node)
     }
 }
 
+static void emit_float_arith_binary(FILE *fp, node_t *node)
+{
+    char suffix, *inst;
+
+    assert(node && node->type == NODE_BINARY);
+    switch (node->binary_op) {
+    case '+':
+        inst = "adds";
+        break;
+    case '-':
+        inst = "subs";
+        break;
+    case '*':
+        inst = "muls";
+        break;
+    case '/':
+        inst = "divs";
+        break;
+
+    default:
+        errorf("invalid arith binary op %c\n", node->binary_op);
+    }
+
+    suffix = (node->ctype == ctype_float) ? 's' : 'd';
+    if (node->binary_op == '+' || node->binary_op == '*') {
+        emit(fp, node->left);
+        PUSH_XMM(0);
+        emit(fp, node->right);
+        POP_XMM(1);
+        EMIT("%s%c   %%xmm1, %%xmm0", inst, suffix);
+    } else {
+        emit(fp, node->left);
+        PUSH_XMM(0);
+        emit(fp, node->right);
+        EMIT("movs%c   %%xmm0, %%xmm1", suffix);
+        POP_XMM(0);
+        EMIT("%s%c   %%xmm1, %%xmm0", inst, suffix);
+    }
+}
+
+static void emit_cmp_0(FILE *fp, node_t *node)
+{
+    emit(fp, node);
+    if (is_float(node->ctype)) {
+        char suffix = (node->operand->ctype == ctype_float) ? 's' : 'd';
+        emit(fp, node->operand);
+        EMIT("xorp%c   %%xmm1, %%xmm1", suffix);
+        EMIT("ucomis%c %%xmm0, %%xmm1", suffix);
+    } else {
+        int size = node->ctype->size;
+        EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
+    }
+}
+
 static void emit_log_and_binary(FILE *fp, node_t *node)
 {
     int size;
-    char *label;
+    char *inst;
+    char *f, *done;
 
+    /* A && B:
+     *      if (!A)
+     *          goto false;
+     *      if (!B)
+     *          goto false;
+     *      eax = 1;
+     *      goto done;
+     * false:
+     *      eax = 0;
+     * done:
+     */
     assert(node && node->type == NODE_BINARY && node->binary_op == PUNCT_AND);
-    emit(fp, node->left);
-    size = node->left->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    label = make_label();
-    EMIT("je      %s", label);
-
-    emit(fp, node->right);
-    size = node->right->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    EMIT("je      %s", label);
+    emit_cmp_0(fp, node->left);
+    inst = is_float(node->left->ctype) ? "jnp" : "je";
+    f = make_jump_label();
+    EMIT("%s      %s", inst, f);
+    emit_cmp_0(fp, node->right);
+    inst = is_float(node->right->ctype) ? "jnp" : "je";
+    EMIT("%s      %s", inst, f);
 
     size = node->ctype->size;
     EMIT_INST("mov", size, "$1, %s", rax[size]);
-    EMIT_LABEL(label);
+    done = make_jump_label();
+    EMIT("jmp     %s", done);
+    EMIT_LABEL(f);
+    EMIT_INST("mov", size, "$0, %s", rax[size]);
+    EMIT_LABEL(done);
 }
 
 static void emit_log_or_binary(FILE *fp, node_t *node)
 {
     int size;
-    char *label1, *label2;
+    char *inst;
+    char *t, *done;
 
+    /* A || B:
+     *      if (A)
+     *          goto true;
+     *      if (B)
+     *          goto true;
+     *      eax = 0;
+     *      goto done;
+     * true:
+     *      eax = 1;
+     * done:
+     */
     assert(node && node->type == NODE_BINARY && node->binary_op == PUNCT_OR);
-    emit(fp, node->left);
-    size = node->left->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    label1 = make_label();
-    EMIT("jne     %s", label1);
+    emit_cmp_0(fp, node->left);
+    inst = is_float(node->left->ctype) ? "jp" : "jne";
+    t = make_jump_label();
+    EMIT("%s      %s", inst, t);
+    emit_cmp_0(fp, node->right);
+    inst = is_float(node->right->ctype) ? "jp" : "jne";
+    EMIT("%s      %s", inst, t);
 
-    emit(fp, node->right);
-    size = node->left->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    label2 = make_label();
-    EMIT("je      %s", label2);
-
-    EMIT_LABEL(label1);
     size = node->ctype->size;
+    EMIT_INST("mov", size, "$0, %s", rax[size]);
+    done = make_jump_label();
+    EMIT("jmp     %s", done);
+    EMIT_LABEL(t);
     EMIT_INST("mov", size, "$1, %s", rax[size]);
-    EMIT_LABEL(label2);
+    EMIT_LABEL(done);
+}
+
+static void emit_assign(FILE *fp, node_t *dst, char *src)
+{
+    assert(dst && src);
+    if (is_float(dst->ctype)) {
+        char suffix = (dst->ctype == ctype_float) ? 's' : 'd';
+        if (dst->type == NODE_VAR) {
+            EMIT("movs%c   %s, -%d(%%rbp)", suffix, src, dst->loffset);
+        } else {
+            emit(fp, dst->operand);
+            EMIT("movs%c   %s, (%%rax)", suffix, src);
+        }
+    } else {
+        int size = dst->ctype->size;
+        if (dst->type == NODE_VAR)
+            EMIT_INST("mov", size, "%s, -%d(%%rbp)", src, dst->loffset);
+        else {
+            if (!strcmp(src, "%rax")) {
+                PUSH("%%rax");
+                emit(fp, dst->operand);
+                EMIT_INST("mov", 8, "%s, %s", rax[8], rcx[8]);
+                POP("%%rax");
+                EMIT_INST("mov", size, "%s, (%%rcx)", rax[size]);
+            } else {
+                assert(!strcmp(src, "%rcx"));
+                emit(fp, dst->operand);
+                EMIT_INST("mov", size, "%s, (%%rax)", rcx[size]);
+            }
+        }
+    }
 }
 
 static void emit_assign_binary(FILE *fp, node_t *node)
 {
-    int size;
-    node_t *lvalue;
+    char *src;
 
     assert(node && node->type == NODE_BINARY && node->binary_op == '=');
     emit(fp, node->right);
-    size = node->ctype->size;
-    lvalue = node->left;
-    if (lvalue->type == NODE_VAR)
-        EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], lvalue->loffset);
-    else {
-        assert(lvalue->type == NODE_UNARY && lvalue->unary_op == '*');
-        PUSH("%%rax");
-        emit(fp, lvalue->operand);
-        POP("%%rcx");
-        EMIT_INST("mov", size, "%s, (%%rax)", rcx[size]);
-        EMIT_INST("mov", size, "%s, %s", rcx[size], rax[size]);
-        /*
-        EMIT_INST("mov", 8, "%%rax, %%rcx");
-        POP("%%rax");
-        EMIT_INST("mov", size, "%s, (%%rcx)", rax[size]);
-        */
-    }
+    src = is_float(node->ctype) ? "%xmm0" : "%rax";
+    emit_assign(fp, node->left, src);
 }
 
 static void emit_cmp_binary(FILE *fp, node_t *node)
 {
-    char *op;
+    char *inst;
     int size;
 
     assert(node && node->type == NODE_BINARY);
     switch (node->binary_op) {
     case '<':
-        op = "setl";
+        inst = "setl";
         break;
     case '>':
-        op = "setg";
+        inst = "setg";
         break;
     case PUNCT_LE:
-        op = "setle";
+        inst = "setle";
         break;
     case PUNCT_GE:
-        op = "setge";
+        inst = "setge";
         break;
     case PUNCT_EQ:
-        op = "sete";
+        inst = "sete";
         break;
     case PUNCT_NE:
-        op = "setne";
+        inst = "setne";
         break;
 
     default:
@@ -367,7 +633,48 @@ static void emit_cmp_binary(FILE *fp, node_t *node)
     POP("%%rcx");
     size = node->left->ctype->size;
     EMIT_INST("cmp", size, "%s, %s", rax[size], rcx[size]);
-    EMIT("%s    %%al", op);
+    EMIT("%s    %%al", inst);
+    EMIT("movzbl  %%al, %%eax");
+}
+
+static void emit_float_cmp_binary(FILE *fp, node_t *node)
+{
+    char *inst;
+    char suffix;
+
+    assert(node && node->type == NODE_BINARY);
+    switch (node->binary_op) {
+    case '<':
+        inst = "setna";
+        break;
+    case '>':
+        inst = "seta";
+        break;
+    case PUNCT_LE:
+        inst = "setnae";
+        break;
+    case PUNCT_GE:
+        inst = "setae";
+        break;
+    case PUNCT_EQ:
+        inst = "setnp";
+        break;
+    case PUNCT_NE:
+        inst = "setp";
+        break;
+
+    default:
+        errorf("invalid cmp binary op %c\n", node->binary_op);
+        break;
+    }
+
+    suffix = (node->left->ctype == ctype_float) ? 's' : 'd';
+    emit(fp, node->left);
+    PUSH_XMM(0);
+    emit(fp, node->right);
+    POP_XMM(1);
+    EMIT("ucomis%c %%xmm0, %%xmm1", suffix);
+    EMIT("%s    %%al", inst);
     EMIT("movzbl  %%al, %%eax");
 }
 
@@ -386,8 +693,13 @@ static void emit_binary(FILE *fp, node_t *node)
         emit_bit_binary(fp, node);
         break;
 
-    case '+': case '-': case '*': case '/': case '%':
-    case PUNCT_LSFT: case PUNCT_RSFT:
+    case '+': case '-': case '*': case '/':
+        if (is_float(node->ctype)) {
+            emit_float_arith_binary(fp, node);
+            break;
+        }
+        /* fall through */
+    case '%': case PUNCT_LSFT: case PUNCT_RSFT:
         emit_arith_binary(fp, node);
         break;
 
@@ -403,6 +715,10 @@ static void emit_binary(FILE *fp, node_t *node)
         break;
 
     case '<': case '>': case PUNCT_LE: case PUNCT_GE: case PUNCT_EQ: case PUNCT_NE:
+        if (is_float(node->left->ctype)) {
+            emit_float_cmp_binary(fp, node);
+            break;
+        }
         emit_cmp_binary(fp, node);
         break;
 
@@ -419,28 +735,32 @@ static void emit_binary(FILE *fp, node_t *node)
 
 static void emit_ternary(FILE *fp, node_t *node)
 {
-    int size;
-    char *els;
-    char *done;
+    char *f, *done;
 
+    /* A ? B : C
+     *      if (!A)
+     *          goto false;
+     *      B
+     *      goto done;
+     * false:
+     *      C
+     * done:
+     */
     assert(node && node->type == NODE_TERNARY);
-    emit(fp, node->cond);
-    size = node->cond->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    els = make_label();
-    EMIT("je      %s", els);
+    emit_cmp_0(fp, node->cond);
+    f = make_jump_label();
+    EMIT("%s      %s", is_float(node->ctype) ? "jnp" : "je", f);
     emit(fp, node->then);
-    done = make_label();
+    done = make_jump_label();
     EMIT("jmp     %s", done);
-    EMIT_LABEL(els);
+    EMIT_LABEL(f);
     emit(fp, node->els);
     EMIT_LABEL(done);
 }
 
 static void emit_if(FILE *fp, node_t *node)
 {
-    int size;
-    char *label;
+    char *f;
 
     assert(node && node->type == NODE_IF);
     /*      if (!cond)
@@ -451,25 +771,22 @@ static void emit_if(FILE *fp, node_t *node)
      *      else;
      * done:
      */
-    emit(fp, node->cond);
-    size = node->cond->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    label = make_label();
-    EMIT("je      %s", label);
+    emit_cmp_0(fp, node->cond);
+    f = make_jump_label();
+    EMIT("%s      %s", is_float(node->cond->ctype) ? "jnp" : "je", f);
     emit(fp, node->then);
     if (node->els) {
-        char *done = make_label();
+        char *done = make_jump_label();
         EMIT("jmp     %s", done);
-        EMIT_LABEL(label);
+        EMIT_LABEL(f);
         emit(fp, node->els);
         EMIT_LABEL(done);
     } else
-        EMIT_LABEL(label);
+        EMIT_LABEL(f);
 }
 
 static void emit_for(FILE *fp, node_t *node)
 {
-    int size;
     char *test, *loop;
 
     assert(node && node->type == NODE_FOR);
@@ -483,24 +800,21 @@ static void emit_for(FILE *fp, node_t *node)
      *          goto loop;
      */
     emit(fp, node->for_init);
-    test = make_label();
+    test = make_jump_label();
     EMIT("jmp     %s", test);
-    loop = make_label();
+    loop = make_jump_label();
     EMIT_LABEL(loop);
     emit(fp, node->for_body);
     emit(fp, node->for_step);
     EMIT_LABEL(test);
     if (node->for_cond) {
-        emit(fp, node->for_cond);
-        size = node->for_cond->ctype->size;
-        EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-        EMIT("jne     %s", loop);
+        emit_cmp_0(fp, node->for_cond);
+        EMIT("%s      %s", is_float(node->for_cond->ctype) ? "jp" : "jne", loop);
     } else
         EMIT("jmp     %s", loop);
 }
 static void emit_do_while(FILE *fp, node_t *node)
 {
-    int size;
     char *loop;
 
     assert(node && node->type == NODE_DO_WHILE);
@@ -509,40 +823,18 @@ static void emit_do_while(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
-    loop = make_label();
+    loop = make_jump_label();
     EMIT_LABEL(loop);
     emit(fp, node->while_body);
-    emit(fp, node->while_cond);
-    size = node->while_cond->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    EMIT("jne     %s", loop);
+    emit_cmp_0(fp, node->while_cond);
+    EMIT("%s      %s", is_float(node->while_cond->ctype) ? "jp" : "jne", loop);
 }
 
 static void emit_while(FILE *fp, node_t *node)
 {
-    int size;
-    char *loop, *done;
+    char *loop, *test;
 
     assert(node && node->type == NODE_WHILE);
-    /* loop:
-     *      if (!cond)
-     *          goto end;
-     *      body;
-     *      goto loop;
-     * done:
-     *
-    loop = make_label();
-    EMIT_LABEL(loop);
-    emit(fp, node->while_cond);
-    size = node->while_cond->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    done = make_label();
-    EMIT("je      %s", done);
-    emit(fp, node->while_body);
-    EMIT("jmp     %s", loop);
-    EMIT_LABEL(done);
-    */
-
     /*      goto test;
      * loop:
      *      body;
@@ -550,16 +842,14 @@ static void emit_while(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
-    done = make_label();
-    EMIT("jmp     %s", done);
-    loop = make_label();
+    test = make_jump_label();
+    EMIT("jmp     %s", test);
+    loop = make_jump_label();
     EMIT_LABEL(loop);
     emit(fp, node->while_body);
-    EMIT_LABEL(done);
-    emit(fp, node->while_cond);
-    size = node->while_cond->ctype->size;
-    EMIT_INST("test", size, "%s, %s", rax[size], rax[size]);
-    EMIT("jne     %s", loop);
+    EMIT_LABEL(test);
+    emit_cmp_0(fp, node->while_cond);
+    EMIT("%s      %s", is_float(node->while_cond->ctype) ? "jp" : "jne", loop);
 }
 
 
@@ -574,7 +864,7 @@ static void set_var_offset(vector_t *vars)
     for (i = 0; i < vector_len(vars); i++) {
         var = vector_get(vars, i);
         assert(var->type == NODE_VAR_DECL);
-        size = var->ctype->size < 8 ? 4 : 8;
+        size = (var->ctype->size < 8) ? 4 : 8;
         offset = align(offset + var->ctype->size, size);
         var->loffset = offset;
     }
@@ -671,19 +961,25 @@ static void emit_var_decl(FILE *fp, node_t *node)
     /* Avoid emit var to rax when decl */
     if (node->type == NODE_VAR_DECL)
         node->type = NODE_VAR;
-    else
-        EMIT_INST("mov", node->ctype->size, "-%d(%%rbp), %s", node->loffset, rax[node->ctype->size]);
+    else {
+        if (is_float(node->ctype))
+            EMIT("movs%c   -%d(%%rbp), %%xmm0", (node->ctype == ctype_float) ? 's' : 'd', node->loffset);
+        else
+            EMIT_INST("mov", node->ctype->size, "-%d(%%rbp), %s", node->loffset, rax[node->ctype->size]);
+    }
 }
 
 static void emit_var_init(FILE *fp, node_t *node)
 {
-    int size;
-
     assert(node && node->type == NODE_VAR_INIT);
     node->left->type = NODE_VAR;
     emit(fp, node->right);
-    size = node->left->ctype->size;
-    EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->left->loffset);
+    if (is_float(node->left->ctype)) {
+        EMIT("movs%c   %%xmm0, -%d(%%rbp)", (node->ctype == ctype_float) ? 's' : 'd', node->left->loffset);
+    } else {
+        int size = node->left->ctype->size;
+        EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->left->loffset);
+    }
 }
 
 static vector_t *get_local_var(node_t *node)
@@ -740,7 +1036,35 @@ static void emit_compound_stmt(FILE *fp, node_t *node)
 static void emit_return(FILE *fp, node_t *node)
 {
     assert(node && node->type == NODE_RETURN);
-    emit(fp, node->ret);
+    emit(fp, node->expr);
+}
+
+static void emit_cast(FILE *fp, node_t *node)
+{
+}
+
+static void emit_arith_conv(FILE *fp, node_t *node)
+{
+    ctype_t *from, *to;
+    char *inst;
+
+    assert(node && node->type == NODE_ARITH_CONV);
+    emit(fp, node->expr);
+    from = node->expr->ctype;
+    to = node->ctype;
+    if (from == ctype_int) {
+        /* int to float/double */
+        inst = (to == ctype_float) ? "cvtsi2ss" : "cvtsi2sd";
+        EMIT("%s %s, %%xmm0", inst, rax[from->size]);
+    } else if (to == ctype_int) {
+        /* float/double to int */
+        inst = (from == ctype_float) ? "cvtss2si" : "cvttsd2si";
+        EMIT("%s %%xmm0, %s", inst, rax[to->size]);
+    } else {
+        /* float to double/double to float */
+        inst = (from == ctype_float) ? "cvtps2pd" : "cvtpd2ps";
+        EMIT("%s %%xmm0, %%xmm0", inst);
+    }
 }
 
 void emit(FILE *fp, node_t *node)
@@ -757,7 +1081,10 @@ void emit(FILE *fp, node_t *node)
         emit_string(fp, node);
         break;
     case NODE_POSTFIX:
-        emit_postfix_inc_dec(fp, node);
+        if (is_float(node->ctype))
+            emit_float_postfix_inc_dec(fp, node);
+        else
+            emit_postfix_inc_dec(fp, node);
         break;
     case NODE_UNARY:
         emit_unary(fp, node);
@@ -798,6 +1125,12 @@ void emit(FILE *fp, node_t *node)
         break;
     case NODE_RETURN:
         emit_return(fp, node);
+        break;
+    case NODE_CAST:
+        emit_cast(fp, node);
+        break;
+    case NODE_ARITH_CONV:
+        emit_arith_conv(fp, node);
         break;
 
     default:

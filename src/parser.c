@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include "parser.h"
 #include "util.h"
@@ -6,6 +7,8 @@
 ctype_t *ctype_void = &(ctype_t){CTYPE_VOID, 0};
 ctype_t *ctype_char = &(ctype_t){CTYPE_CHAR, 1};
 ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
+ctype_t *ctype_float = &(ctype_t){CTYPE_FLOAT, 4};
+ctype_t *ctype_double = &(ctype_t){CTYPE_DOUBLE, 8};
 
 /* I'm lazy */
 #define _FILE_ parser->lexer->fname
@@ -15,7 +18,6 @@ ctype_t *ctype_int = &(ctype_t){CTYPE_INT, 4};
 #define NEXT() (get_token(parser->lexer))
 #define PEEK() (peek_token(parser->lexer))
 #define UNGET(token) (unget_token(token, parser->lexer))
-/* TODO: concrete error message */
 #define EXPECT_PUNCT(punct) \
     do { \
         token_t *token = NEXT(); \
@@ -57,6 +59,7 @@ static bool is_type(token_t *token)
     case KW_VOID:
     case KW_CHAR:
     case KW_INT:
+    case KW_FLOAT:
     case KW_DOUBLE:
         return true;
     default:
@@ -112,7 +115,19 @@ static bool is_same_type(ctype_t *t, ctype_t *p)
 
 static bool is_arith_type(ctype_t *type)
 {
-    if (type == ctype_int)
+    if (type == ctype_int || type == ctype_float || type == ctype_double)
+        return true;
+    return false;
+}
+
+static bool is_zero(node_t *node)
+{
+    if (node->type != NODE_CONSTANT)
+        return false;
+    if (node->ctype == ctype_int && node->ival == 0)
+        return true;
+    if ((node->ctype == ctype_float || node->ctype == ctype_double)
+            && node->fval == 0)
         return true;
     return false;
 }
@@ -146,11 +161,13 @@ static char *type2str(ctype_t *t)
     static char *s[] = {
         "void",
         "character",
-        "integer",
+        "int",
+        "float",
+        "double",
         "pointer"
     };
 
-    assert(t && t->type >= 0 && t->type < 4);
+    assert(t && t->type >= 0 && t->type < 6);
     return s[t->type];
 }
 
@@ -232,6 +249,26 @@ static node_t *make_compound_stmt(vector_t *stmts)
     return node;
 }
 
+static node_t *make_cast(ctype_t *ctype, node_t *expr)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_CAST);
+    node->ctype = ctype;
+    node->expr = expr;
+    return node;
+}
+
+static node_t *make_arith_conv(ctype_t *ctype, node_t *expr)
+{
+    node_t *node;
+
+    NEW_NODE(node, NODE_ARITH_CONV);
+    node->ctype = ctype;
+    node->expr = expr;
+    return node;
+}
+
 static node_t *make_unary(ctype_t *ctype, int op, node_t *operand)
 {
     node_t *node;
@@ -281,11 +318,27 @@ static node_t *make_ternary(ctype_t *ctype, node_t *cond, node_t *then, node_t *
 static node_t *make_number(char *s)
 {
     node_t *node;
+    char *end;
 
-    /* TODO */
     NEW_NODE(node, NODE_CONSTANT);
-    node->ctype = ctype_int;
-    node->ival = atoi(s);
+    if (strpbrk(s, ".eE")) {
+        size_t len = strlen(s);
+        char *end;
+        if (s[len - 1] == 'f' || s[len - 1] == 'F') {
+            node->fval = strtof(s, &end);
+            node->ctype = ctype_float;
+        } else {
+            node->fval = strtod(s, &end);
+            node->ctype = ctype_double;
+        }
+    } else {
+        /* TODO: different base */
+        node->ival = strtoul(s, &end, 0);
+        node->ctype = ctype_int;
+    }
+    if (*end != '\0' && *end != 'f' && *end != 'F')
+        errorf("invalid character \'%c\'\n", *end);
+
     return node;
 }
 
@@ -358,8 +411,25 @@ static node_t *make_return(ctype_t *ctype, node_t *ret)
 
     NEW_NODE(node, NODE_RETURN);
     node->ctype = ctype;
-    node->ret = ret;
+    node->expr = ret;
     return node;
+}
+
+/* 6.3.1.8 Usual arithmetic conversions */
+static ctype_t *arith_conv(ctype_t *l, ctype_t *r)
+{
+    if (l == ctype_double || r == ctype_double)
+        return ctype_double;
+    else if (l == ctype_float || r == ctype_float)
+        return ctype_float;
+    return ctype_int;
+}
+
+static node_t *conv(ctype_t *ctype, node_t *node)
+{
+    if (is_same_type(ctype, node->ctype))
+        return node;
+    return make_arith_conv(ctype, node);
 }
 
 /* parse functions */
@@ -395,7 +465,6 @@ static node_t *parse_primary_expr(parser_t *parser)
             errorf("\'%s\' undeclared in %s:%d\n", token->sval, _FILE_, _LINE_);
         break;
     case TK_NUMBER:
-        /* TODO */
         primary = make_number(token->sval);
         break;
     case TK_CHAR:
@@ -421,14 +490,16 @@ static vector_t *parse_arg_expr_list(parser_t *parser, node_t *func)
     vector_t *types = func->ctype->param_types;
     size_t i;
 
-    if (TRY_PUNCT(')')) {
-        if (types == NULL)
-            return NULL;
-        else
-            errorf("too few arguments to function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
+    if (types == NULL) {
+        if (!TRY_PUNCT(')'))
+            errorf("too many arguments to function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
+        return NULL;
     }
+    if (TRY_PUNCT(')'))
+        errorf("too few arguments to function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
 
     args = make_vector();
+    /* TODO: conversion */
     for (i = 0; i < vector_len(types); i++) {
         ctype_t *type = vector_get(types, i);
         if (is_punct(PEEK(), ',') || is_punct(PEEK(), ')') || is_punct(PEEK(), ';'))
@@ -600,6 +671,12 @@ static ctype_t *parse_type_name(parser_t *parser)
     case KW_INT:
         ctype = ctype_int;
         break;
+    case KW_FLOAT:
+        ctype = ctype_float;
+        break;
+    case KW_DOUBLE:
+        ctype = ctype_double;
+        break;
 
     default:
         errorf("expected type specifiers in %s:%d\n", _FILE_, _LINE_);
@@ -639,8 +716,7 @@ static node_t *parse_cast_expr(parser_t *parser)
         else if (is_ptr(ctype) && cast->ctype->size != ctype->size)
             errorf("cast to pointer from integer of different size in %s:%d\n", _FILE_, _LINE_);
         /* TODO */
-        cast->ctype = ctype;
-        return cast;
+        return make_cast(ctype, cast);
     }
     UNGET(token);
     return parse_unary_expr(parser);
@@ -659,13 +735,15 @@ static node_t *parse_multiplicative_expr(parser_t *parser)
 
     for (token = NEXT(); is_punct(token, '*') || is_punct(token, '/') || is_punct(token, '%'); token = NEXT()) {
         node_t *cast = parse_cast_expr(parser);
+        ctype_t *ctype;
         if (!(is_arith_type(mul->ctype) && is_arith_type(cast->ctype))
                 || (is_punct(token, '%') && (mul->ctype != ctype_int || cast->ctype != ctype_int)))
             errorf("invalid operands to binary %c (have \'%s\' and \'%s\') in %s:%d\n",
                     token->ival, type2str(mul->ctype), type2str(cast->ctype), _FILE_, _LINE_);
-        if ((is_punct(token, '/') || is_punct(token, '%')) && is_null(cast))
+        if ((is_punct(token, '/') || is_punct(token, '%')) && is_zero(cast))
             errorf("division by zero in %s:%d\n", _FILE_, _LINE_);
-        mul = make_binary(ctype_int, token->ival, mul, cast);
+        ctype = arith_conv(mul->ctype, cast->ctype);
+        mul = make_binary(ctype, token->ival, conv(ctype, mul), conv(ctype, cast));
     }
     UNGET(token);
     return mul;
@@ -694,9 +772,10 @@ static node_t *parse_additive_expr(parser_t *parser)
         else if (is_punct(token, '-') && is_ptr(add->ctype) && is_same_type(add->ctype, mul->ctype))
             add = make_binary(ctype_int, '-', add, mul);
         /* number +- number */
-        else if (is_arith_type(add->ctype) && is_arith_type(mul->ctype))
-            add = make_binary(add->ctype, token->ival, add, mul);
-        else
+        else if (is_arith_type(add->ctype) && is_arith_type(mul->ctype)) {
+            ctype_t *ctype = arith_conv(add->ctype, mul->ctype);
+            add = make_binary(ctype, token->ival, conv(ctype, add), conv(ctype, mul));
+        } else
             errorf("invalid operands to binary %c (have \'%s\' and \'%s\') in %s:%d\n",
                     token->ival, type2str(add->ctype), type2str(mul->ctype), _FILE_, _LINE_);
     }
@@ -747,9 +826,16 @@ static node_t *parse_relational_expr(parser_t *parser)
                 errorf("comparison of distinct pointer types lacks a cast in %s:%d\n", _FILE_, _LINE_);
         } else if (!((is_arith_type(rel->ctype) && is_arith_type(shift->ctype))
                     || (is_ptr(rel->ctype) && is_null(shift))
-                    || (is_ptr(shift->ctype) && is_null(rel))))
+                    || (is_ptr(shift->ctype) && is_null(rel)))) {
             errorf("comparison between %s and %s in %s:%d\n",
                     type2str(rel->ctype), type2str(shift->ctype), _FILE_, _LINE_);
+        }
+
+        if (is_arith_type(rel->ctype) && is_arith_type(shift->ctype)) {
+            ctype_t *ctype = arith_conv(rel->ctype, shift->ctype);
+            rel = conv(ctype, rel);
+            shift = conv(ctype, shift);
+        }
         rel = make_binary(ctype_int, token->ival, rel, shift);
     }
     UNGET(token);
@@ -776,9 +862,16 @@ static node_t *parse_equality_expr(parser_t *parser)
         } else if (!((is_arith_type(eq->ctype) && is_arith_type(rel->ctype))
                     /* one operand is a pointer and the other is a null pointer constant */
                     || (is_ptr(eq->ctype) && is_null(rel))
-                    || (is_ptr(rel->ctype) && is_null(eq))))
+                    || (is_ptr(rel->ctype) && is_null(eq)))) {
             errorf("comparison between %s and %s in %s:%d\n",
                     type2str(eq->ctype), type2str(rel->ctype), _FILE_, _LINE_);
+        }
+
+        if (is_arith_type(eq->ctype) && is_arith_type(rel->ctype)) {
+            ctype_t *ctype = arith_conv(eq->ctype, rel->ctype);
+            eq = conv(ctype, eq);
+            rel = conv(ctype, rel);
+        }
         eq = make_binary(ctype_int, token->ival, eq, rel);
     }
     UNGET(token);
@@ -878,9 +971,14 @@ static node_t *parse_cond_expr(parser_t *parser)
         EXPECT_PUNCT(':');
         node_t *els = parse_cond_expr(parser);
         /* TODO: type */
-        if (!is_same_type(then->ctype, els->ctype))
-            errorf("type mismatch in conditional expression in %s:%d\n", _FILE_, _LINE_);
-        return make_ternary(then->ctype, cond, then, els);
+        if (is_arith_type(then->ctype) && is_arith_type(els->ctype)) {
+            ctype_t *ctype = arith_conv(then->ctype, els->ctype);
+            cond = make_ternary(ctype, cond, conv(ctype, then), conv(ctype, els));
+        } else {
+            if (!is_same_type(then->ctype, els->ctype) && !is_null(then) && !is_null(els))
+                errorf("type mismatch in conditional expression in %s:%d\n", _FILE_, _LINE_);
+            cond = make_ternary(then->ctype, cond, then, els);
+        }
     }
     return cond;
 }
@@ -925,15 +1023,15 @@ static node_t *parse_assign_expr(parser_t *parser)
             if (!is_arith_type(node->ctype) || !is_arith_type(assign->ctype))
                 errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
                         punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
-            if (op == '/' && is_null(assign))
+            if (op == '/' && is_zero(assign))
                 errorf("division by zero in %s:%d\n", _FILE_, _LINE_);
-            assign = make_binary(node->ctype, op, node, assign);
+            assign = make_binary(node->ctype, op, node, conv(node->ctype, assign));
         } else {
             /* %= &= ^= |= <<= >>= */
             if (node->ctype != ctype_int || assign->ctype != ctype_int)
                 errorf("invalid operands to binary %s (have \'%s\' and \'%s\') in %s:%d\n",
                         punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
-            if (op == '%' && is_null(assign))
+            if (op == '%' && is_zero(assign))
                 errorf("division by zero in %s:%d\n", _FILE_, _LINE_);
             assign = make_binary(node->ctype, op, node, assign);
         }
@@ -982,6 +1080,11 @@ static ctype_t *parse_decl_spec(parser_t *parser)
         return ctype_char;
     case KW_INT:
         return ctype_int;
+    case KW_FLOAT:
+        return ctype_float;
+    case KW_DOUBLE:
+        return ctype_double;
+
     default:
         errorf("expected type specifiers in %s:%d\n", _FILE_, _LINE_);
     }
@@ -1098,7 +1201,10 @@ static node_t *parse_init_decl(parser_t *parser, ctype_t *ctype)
     dict_insert(parser->env, decl->varname, decl, true);
     if (TRY_PUNCT('=')) {
         node_t *init = parse_initializer(parser);
-        if (!is_same_type(init->ctype, decl->ctype))
+        if (is_arith_type(decl->ctype) && is_arith_type(init->ctype))
+            return make_var_init(decl, conv(decl->ctype, init));
+        if (!(is_same_type(init->ctype, decl->ctype)
+                    || (is_ptr(decl->ctype) && is_null(init))))
             errorf("initialization makes %s from %s without a cast in %s:%d\n",
                     type2str(decl->ctype), type2str(init->ctype), _FILE_, _LINE_);
         return make_var_init(decl, init);

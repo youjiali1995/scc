@@ -10,6 +10,8 @@ enum {
     CTYPE_VOID,
     CTYPE_CHAR,
     CTYPE_INT,
+    CTYPE_FLOAT,
+    CTYPE_DOUBLE,
     CTYPE_PTR
 };
 
@@ -25,10 +27,6 @@ typedef struct ctype_t {
     /* variable argument lists */
     bool is_va;
 } ctype_t;
-
-extern ctype_t *ctype_void;
-extern ctype_t *ctype_char;
-extern ctype_t *ctype_int;
 
 enum {
     NODE_CONSTANT,
@@ -48,7 +46,9 @@ enum {
     NODE_VAR_INIT,
     NODE_VAR,
     NODE_COMPOUND_STMT,
-    NODE_RETURN
+    NODE_RETURN,
+    NODE_CAST,
+    NODE_ARITH_CONV
 };
 
 typedef struct node_t {
@@ -56,9 +56,12 @@ typedef struct node_t {
     ctype_t *ctype;
     union {
         /* int, char */
-        int ival;
-        /* double */
-        double dval;
+        long ival;
+        /* float/double */
+        struct {
+            double fval;
+            char *flabel;
+        };
         /* string */
         struct {
             char *sval;
@@ -113,8 +116,8 @@ typedef struct node_t {
         };
         /* compound statements */
         vector_t *stmts;
-        /* return */
-        struct node_t *ret;
+        /* return/cast/conv */
+        struct node_t *expr;
     };
 } node_t;
 
@@ -125,6 +128,12 @@ typedef struct parser_t {
     /* current func return type for parse_return_stmt */
     ctype_t *ret;
 } parser_t;
+
+extern ctype_t *ctype_void;
+extern ctype_t *ctype_char;
+extern ctype_t *ctype_int;
+extern ctype_t *ctype_float;
+extern ctype_t *ctype_double;
 
 void parser_init(parser_t *parser, lexer_t *lexer);
 node_t *get_node(parser_t *parser);

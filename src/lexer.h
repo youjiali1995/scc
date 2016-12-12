@@ -19,6 +19,7 @@ enum {
     KW_VOID = 1,
     KW_CHAR,
     KW_INT,
+    KW_FLOAT,
     KW_DOUBLE,
     KW_FOR,
     KW_DO,
