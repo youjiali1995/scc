@@ -789,6 +789,7 @@ static void emit_if(FILE *fp, node_t *node)
 static void emit_for(FILE *fp, node_t *node)
 {
     char *test, *loop;
+    int prev_offset;
 
     assert(node && node->type == NODE_FOR);
     /*      init;
@@ -800,6 +801,7 @@ static void emit_for(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
+    prev_offset = offset;
     emit(fp, node->for_init);
     test = make_jump_label();
     EMIT("jmp     %s", test);
@@ -807,6 +809,10 @@ static void emit_for(FILE *fp, node_t *node)
     EMIT_LABEL(loop);
     emit(fp, node->for_body);
     emit(fp, node->for_step);
+    if (prev_offset != offset) {
+        EMIT("addq    $%d, %%rsp", offset - prev_offset);
+        offset = prev_offset;
+    }
     EMIT_LABEL(test);
     if (node->for_cond) {
         emit_cmp_0(fp, node->for_cond);
@@ -817,6 +823,7 @@ static void emit_for(FILE *fp, node_t *node)
 static void emit_do_while(FILE *fp, node_t *node)
 {
     char *loop;
+    int prev_offset;
 
     assert(node && node->type == NODE_DO_WHILE);
     /* loop:
@@ -824,9 +831,14 @@ static void emit_do_while(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
+    prev_offset = offset;
     loop = make_jump_label();
     EMIT_LABEL(loop);
     emit(fp, node->while_body);
+    if (prev_offset != offset) {
+        EMIT("addq    $%d, %%rsp", offset - prev_offset);
+        offset = prev_offset;
+    }
     emit_cmp_0(fp, node->while_cond);
     EMIT("%s      %s", is_float(node->while_cond->ctype) ? "jp" : "jne", loop);
 }
@@ -834,6 +846,7 @@ static void emit_do_while(FILE *fp, node_t *node)
 static void emit_while(FILE *fp, node_t *node)
 {
     char *loop, *test;
+    int prev_offset;
 
     assert(node && node->type == NODE_WHILE);
     /*      goto test;
@@ -843,11 +856,16 @@ static void emit_while(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
+    prev_offset = offset;
     test = make_jump_label();
     EMIT("jmp     %s", test);
     loop = make_jump_label();
     EMIT_LABEL(loop);
     emit(fp, node->while_body);
+    if (prev_offset != offset) {
+        EMIT("addq    $%d, %%rsp", offset - prev_offset);
+        offset = prev_offset;
+    }
     EMIT_LABEL(test);
     emit_cmp_0(fp, node->while_cond);
     EMIT("%s      %s", is_float(node->while_cond->ctype) ? "jp" : "jne", loop);
@@ -1062,14 +1080,9 @@ static void emit_compound_stmt(FILE *fp, node_t *node)
     prev_offset = offset;
     set_var_offset(get_local_var(node));
     if (offset != prev_offset)
-        EMIT_INST("sub", 8, "$%d, %%rsp", offset - prev_offset);
+        EMIT("subq    $%d, %%rsp", offset - prev_offset);
     for (i = 0; i < vector_len(node->stmts); i++)
         emit(fp, vector_get(node->stmts, i));
-    /* Avoid allocation repeatedly within loops */
-    if (offset != prev_offset) {
-        EMIT_INST("add", 8, "$%d, %%rsp", offset - prev_offset);
-        offset = prev_offset;
-    }
 }
 
 static void emit_return(FILE *fp, node_t *node)
