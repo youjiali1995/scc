@@ -200,6 +200,16 @@ static ctype_t *make_ptr(ctype_t *p)
     return ctype;
 }
 
+static ctype_t *make_array(ctype_t *p, int len)
+{
+    ctype_t *ctype;
+
+    NEW_TYPE(ctype, CTYPE_ARRAY, 8);
+    ctype->ptr = p;
+    ctype->len = len;
+    return ctype;
+}
+
 /*************************** node constructors **********************************/
 #define NEW_NODE(node, tp) \
     do { \
@@ -1159,6 +1169,7 @@ static node_t *parse_direct_decl(parser_t *parser, ctype_t *ctype)
                 vector_append(decl->ctype->param_types, ((node_t *) vector_get(decl->params, i))->ctype);
         }
         EXPECT_PUNCT(')');
+    } else if (TRY_PUNCT('[')) {
     } else {
         decl = make_var_decl(ctype, token->sval);
     }
@@ -1176,7 +1187,7 @@ static node_t *parse_declarator(parser_t *parser, ctype_t *ctype)
     for (n = 0; TRY_PUNCT('*'); n++)
         ;
     node = parse_direct_decl(parser, ctype);
-    ctype = node->type == NODE_VAR_DECL ? node->ctype : node->ctype->ret;
+    ctype = (node->type == NODE_VAR_DECL) ? node->ctype : node->ctype->ret;
     while (n-- > 0)
         ctype = make_ptr(ctype);
     if (node->type == NODE_VAR_DECL) {
@@ -1206,7 +1217,8 @@ static node_t *parse_initializer(parser_t *parser)
 static node_t *parse_init_decl(parser_t *parser, ctype_t *ctype)
 {
     node_t *decl = parse_declarator(parser, ctype);
-    dict_insert(parser->env, decl->varname, decl, true);
+    if (!dict_insert(parser->env, decl->varname, decl, true))
+        errorf("redeclaration of \'%s\' in %s:%d\n", decl->varname, _FILE_, _LINE_);
     if (TRY_PUNCT('=')) {
         node_t *init = parse_initializer(parser);
         if (is_arith_type(decl->ctype) && is_arith_type(init->ctype))
@@ -1447,22 +1459,26 @@ static node_t *parse_func_def(parser_t *parser)
     ctype_t *ctype;
     size_t i;
 
-    ctype = parse_decl_spec(parser);
-    func = parse_declarator(parser, ctype);
-    func->type = NODE_FUNC_DEF;
     env = parser->env;
     parser->env = make_dict(env);
+    ctype = parse_decl_spec(parser);
+    func = parse_declarator(parser, ctype);
+    if (func->type != NODE_FUNC_DECL)
+        errorf("expected function definition in %s:%d\n", _FILE_, _LINE_);
+    if (!dict_insert(env, func->func_name, func, true))
+        errorf("redefinition of function \'%s\' in %s:%d\n", func->func_name, _FILE_, _LINE_);
+    func->type = NODE_FUNC_DEF;
     parser->ret = func->ctype->ret;
     for (i = 0; i < vector_len(func->params); i++) {
         node_t *param = vector_get(func->params, i);
         /* TODO: pointer to func as param */
-        dict_insert(parser->env, param->varname, param, true);
+        if (!dict_insert(parser->env, param->varname, param, true))
+            errorf("redefinition of parameter \'%s\' in %s:%d\n", param->varname, _FILE_, _LINE_);
     }
     EXPECT_PUNCT('{');
     func->func_body = parse_compound_stmt(parser);
     parser->env = env;
     parser->ret = NULL;
-    dict_insert(parser->env, func->func_name, func, true);
     return func;
 }
 
