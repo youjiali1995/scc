@@ -11,6 +11,7 @@ int main(void)
         "void",
         "char",
         "int",
+        "float",
         "double",
         "for",
         "do",

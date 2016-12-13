@@ -274,6 +274,7 @@ static void emit_float_neg(FILE *fp, node_t *node)
             EMIT(".long   0");
             EMIT(".long   0");
             EMIT(".long   0");
+            EMIT(".text");
         }
         label = f;
         suffix = 's';
@@ -287,6 +288,7 @@ static void emit_float_neg(FILE *fp, node_t *node)
             EMIT(".long   -2147483648");
             EMIT(".long   0");
             EMIT(".long   0");
+            EMIT(".text");
         }
         label = d;
         suffix = 'd';
@@ -475,8 +477,7 @@ static void emit_cmp_0(FILE *fp, node_t *node)
 {
     emit(fp, node);
     if (is_float(node->ctype)) {
-        char suffix = (node->operand->ctype == ctype_float) ? 's' : 'd';
-        emit(fp, node->operand);
+        char suffix = (node->ctype == ctype_float) ? 's' : 'd';
         EMIT("xorp%c   %%xmm1, %%xmm1", suffix);
         EMIT("ucomis%c %%xmm0, %%xmm1", suffix);
     } else {
@@ -873,6 +874,7 @@ static void set_var_offset(vector_t *vars)
 static void emit_func_prologue(FILE *fp, node_t *node)
 {
     size_t i;
+    int float_idx, int_idx;
 
     EMIT(".text");
     EMIT(".globl  %s", node->func_name);
@@ -886,12 +888,19 @@ static void emit_func_prologue(FILE *fp, node_t *node)
     if (offset)
         EMIT_INST("sub", 8, "$%d, %%rsp", offset);
 
-    /* TODO: float type %xmm
+    /* TODO:
      *       > 6 args
      */
-    for (i = 0; i < vector_len(node->params); i++) {
+    for (i = float_idx = int_idx = 0; i < vector_len(node->params); i++) {
         node_t *var = vector_get(node->params, i);
-        EMIT_INST("mov", var->ctype->size, "%s, -%d(%%rbp)", arg_regs[var->ctype->size][i], var->loffset);
+        if (is_float(var->ctype)) {
+            char suffix = (var->ctype == ctype_float) ? 's' : 'd';
+            EMIT("movs%c   %%xmm%d, -%d(%%rbp)", suffix, float_idx++, var->loffset);
+        } else {
+            int size = var->ctype->size;
+            EMIT_INST("mov", size, "%s, -%d(%%rbp)", arg_regs[size][int_idx++], var->loffset);
+        }
+        var->type = NODE_VAR;
     }
 }
 
@@ -936,22 +945,47 @@ static void mov_var(FILE *fp, node_t *node, char *reg)
 static void emit_func_call(FILE *fp, node_t *node)
 {
     size_t i;
+    int float_idx, int_idx;
+    int order = 0;
 
     assert(node && node->type == NODE_FUNC_CALL);
-    for (i = 0; i < vector_len(node->params); i++) {
+    for (i = float_idx = int_idx = 0; i < vector_len(node->params); i++) {
         node_t *arg = vector_get(node->params, i);
-        int size = arg->ctype->size;
+        /* Store rcx and xmm0 because they may be modified in following emit */
+        if (!is_float(arg->ctype) && int_idx == 4) {
+            PUSH("%%rcx");
+            order = 1;
+        } else if (is_float(arg->ctype) && float_idx == 1) {
+            PUSH_XMM(0);
+            order = 2;
+        }
         emit(fp, arg);
-        EMIT_INST("mov", size, "%s, %s", rax[size], arg_regs[size][i]);
+        if (is_float(arg->ctype)) {
+            char suffix = (arg->ctype == ctype_float) ? 's' : 'd';
+            EMIT("movs%c   %%xmm0, %%xmm%d", suffix, float_idx++);
+        } else {
+            int size = arg->ctype->size;
+            EMIT_INST("mov", size, "%s, %s", rax[size], arg_regs[size][int_idx++]);
+        }
     }
-    /* TODO: %eax must be set to the number of floating point arguments
-     * Now set 0
-     */
+
+    if (order == 1) {
+        POP("%%rcx");
+        if (float_idx > 1)
+            POP_XMM(0);
+    } else if (order == 2) {
+        POP_XMM(0);
+        if (int_idx > 4)
+            POP("%%rcx");
+    }
     if (node->ctype->is_va)
-        EMIT_INST("mov", 4, "$0, %s", rax[4]);
+        EMIT_INST("mov", 4, "$%d, %s", float_idx, rax[4]);
     /* size of stack frame is times of 16 bytes */
-    if (offset % 16 != 0)
-        EMIT("subq    $%d, %%rsp", align(offset, 16) - offset);
+    if (offset % 16 != 0) {
+        int temp = offset;
+        offset = align(offset, 16);
+        EMIT("subq    $%d, %%rsp", offset - temp);
+    }
     EMIT("call    %s", node->func_name);
 }
 
@@ -975,7 +1009,7 @@ static void emit_var_init(FILE *fp, node_t *node)
     node->left->type = NODE_VAR;
     emit(fp, node->right);
     if (is_float(node->left->ctype)) {
-        EMIT("movs%c   %%xmm0, -%d(%%rbp)", (node->ctype == ctype_float) ? 's' : 'd', node->left->loffset);
+        EMIT("movs%c   %%xmm0, -%d(%%rbp)", (node->left->ctype == ctype_float) ? 's' : 'd', node->left->loffset);
     } else {
         int size = node->left->ctype->size;
         EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->left->loffset);
@@ -1031,6 +1065,11 @@ static void emit_compound_stmt(FILE *fp, node_t *node)
         EMIT_INST("sub", 8, "$%d, %%rsp", offset - prev_offset);
     for (i = 0; i < vector_len(node->stmts); i++)
         emit(fp, vector_get(node->stmts, i));
+    /* Avoid allocation repeatedly within loops */
+    if (offset != prev_offset) {
+        EMIT_INST("add", 8, "$%d, %%rsp", offset - prev_offset);
+        offset = prev_offset;
+    }
 }
 
 static void emit_return(FILE *fp, node_t *node)

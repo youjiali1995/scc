@@ -505,7 +505,9 @@ static vector_t *parse_arg_expr_list(parser_t *parser, node_t *func)
         if (is_punct(PEEK(), ',') || is_punct(PEEK(), ')') || is_punct(PEEK(), ';'))
             errorf("expected expression before \'%c\' token in %s:%d\n", PEEK()->ival, _FILE_, _LINE_);
         node_t *arg = parse_assign_expr(parser);
-        if (!is_same_type(type, arg->ctype))
+        if (is_arith_type(type) && is_arith_type(arg->ctype))
+            arg = conv(type, arg);
+        else if (!is_same_type(type, arg->ctype) && !is_null(arg))
             errorf("passing argument %d of \'%s\' makes %s from %s without a cast in %s:%d\n",
                     (int) i + 1, func->func_name, type2str(type), type2str(arg->ctype), _FILE_, _LINE_);
         vector_append(args, arg);
@@ -520,6 +522,9 @@ static vector_t *parse_arg_expr_list(parser_t *parser, node_t *func)
             if (is_punct(PEEK(), ',') || is_punct(PEEK(), ')') || is_punct(PEEK(), ';'))
                 errorf("expected expression before \'%c\' token in %s:%d\n", PEEK()->ival, _FILE_, _LINE_);
             node_t *arg = parse_assign_expr(parser);
+            /* varaiable argument function converts float type arg to double; */
+            if (arg->ctype == ctype_float)
+                arg = conv(ctype_double, arg);
             vector_append(args, arg);
             if (is_punct(PEEK(), ')'))
                 break;
@@ -1025,7 +1030,8 @@ static node_t *parse_assign_expr(parser_t *parser)
                         punct2str(token->ival), type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
             if (op == '/' && is_zero(assign))
                 errorf("division by zero in %s:%d\n", _FILE_, _LINE_);
-            assign = make_binary(node->ctype, op, node, conv(node->ctype, assign));
+            ctype_t *ctype = arith_conv(node->ctype, assign->ctype);
+            assign = make_binary(node->ctype, op, conv(ctype, node), conv(ctype, assign));
         } else {
             /* %= &= ^= |= <<= >>= */
             if (node->ctype != ctype_int || assign->ctype != ctype_int)
@@ -1036,7 +1042,9 @@ static node_t *parse_assign_expr(parser_t *parser)
             assign = make_binary(node->ctype, op, node, assign);
         }
     }
-    if (!is_same_type(node->ctype, assign->ctype))
+    if (is_arith_type(node->ctype) && is_arith_type(assign->ctype))
+        return make_binary(node->ctype, '=', node, conv(node->ctype, assign));
+    if (!is_same_type(node->ctype, assign->ctype) && !is_null(assign))
         errorf("assignment make %s from %s without a cast in %s:%d\n",
                 type2str(node->ctype), type2str(assign->ctype), _FILE_, _LINE_);
     return make_binary(node->ctype, '=', node, assign);
@@ -1343,11 +1351,13 @@ static node_t *parse_return_stmt(parser_t *parser)
         return make_return(ctype_void, NULL);
     }
     expr = parse_expr(parser);
-    if (!is_same_type(expr->ctype, parser->ret))
-        errorf("return makes %s from %s without a cast in %s:%d\n",
-                type2str(parser->ret), type2str(expr->ctype), _FILE_, _LINE_);
+    if (is_arith_type(expr->ctype) && is_arith_type(parser->ret))
+        expr = conv(parser->ret, expr);
+    else if (!is_same_type(expr->ctype, parser->ret) && !is_null(expr))
+            errorf("return makes %s from %s without a cast in %s:%d\n",
+                    type2str(parser->ret), type2str(expr->ctype), _FILE_, _LINE_);
     EXPECT_PUNCT(';');
-    return make_return(expr->ctype, expr);
+    return make_return(parser->ret, expr);
 }
 
 /* block-item:
