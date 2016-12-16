@@ -18,7 +18,7 @@ void vector_append(vector_t *vec, void *val)
     assert(vec);
     if (vec->top == vec->size) {
         vec->size += vec->size >> 1;
-        vec->item = realloc(vec->item, vec->size);
+        vec->item = realloc(vec->item, vec->size * sizeof(void *));
     }
     vec->item[vec->top++] = val;
 }
