@@ -90,7 +90,7 @@ static void emit_constant(FILE *fp, node_t *node)
 
     assert(node && node->type == NODE_CONSTANT);
     size = node->ctype->size;
-    if (node->ctype == ctype_int) {
+    if (!is_float(node->ctype)) {
         EMIT_INST("mov", size, "$%ld, %s", node->ival, rax[size]);
     } else {
         EMIT(".section\t.rodata");
@@ -132,7 +132,7 @@ static void emit_postfix_inc_dec(FILE *fp, node_t *node)
     emit(fp, node->operand);
     inst = (node->unary_op == PUNCT_INC) ? "add" : "sub";
     size = node->ctype->size;
-    delta = (node->operand->ctype->type == CTYPE_PTR) ? node->operand->ctype->ptr->size : 1;
+    delta = is_ptr(node->operand->ctype) ? node->operand->ctype->ptr->size : 1;
     EMIT_INST("mov", size, "%s, %s", rax[size], rcx[size]);
     EMIT_INST(inst, size, "$%d, %s", delta, rcx[size]);
     emit_assign(fp, node->operand, "%rcx");
@@ -149,7 +149,7 @@ static void emit_prefix_inc_dec(FILE *fp, node_t *node)
     emit(fp, node->operand);
     inst = (node->unary_op == PUNCT_INC) ? "add" : "sub";
     size = node->ctype->size;
-    delta = (node->operand->ctype->type == CTYPE_PTR) ? node->operand->ctype->ptr->size : 1;
+    delta = is_ptr(node->operand->ctype) ? node->operand->ctype->ptr->size : 1;
     EMIT_INST(inst, size, "$%d, %s", delta, rax[size]);
     emit_assign(fp, node->operand, "%rax");
 }
@@ -237,7 +237,7 @@ static void emit_addr(FILE *fp, node_t *node)
         assert(node->operand->unary_op == '*');
         emit(fp, node->operand->operand);
         break;
-    /* TODO: array */
+
     default:
         errorf("invalid operand of \'&\'\n");
     }
@@ -375,12 +375,55 @@ static void emit_bit_binary(FILE *fp, node_t *node)
     EMIT_INST(inst, size, "%s, %s", rcx[size], rax[size]);
 }
 
+static int bit(int n)
+{
+    int i;
+
+    for (i = 0; n != 1; i++, n >>= 1)
+        ;
+    return i;
+}
+
+static void emit_ptr_arith_binary(FILE *fp, node_t *node)
+{
+    int size;
+    int shift_bits;
+
+    assert(is_ptr(node->left->ctype));
+    size = node->left->ctype->size;
+    shift_bits = bit(node->left->ctype->ptr->size);
+    emit(fp, node->left);
+    PUSH("%%rax");
+    emit(fp, node->right);
+    POP("%%rcx");
+    /* ptr - ptr */
+    if (is_ptr(node->right->ctype)) {
+        assert(node->binary_op == '-');
+        EMIT_INST("sub", size, "%s, %s", rax[size], rcx[size]);
+        EMIT_INST("mov", size, "%s, %s", rcx[size], rax[size]);
+        if (shift_bits)
+            EMIT_INST("sar", size, "$%d, %s", shift_bits, rax[size]);
+    /* ptr +- int */
+    } else {
+        /* sign extend %eax to %rax */
+        EMIT("cltq");
+        EMIT_INST("sal", size, "$%d, %s", shift_bits, rax[size]);
+        EMIT_INST(node->binary_op == '-' ? "sub" : "add", size, "%s, %s", rax[size], rcx[size]);
+        EMIT_INST("mov", size, "%s, %s", rcx[size], rax[size]);
+    }
+}
+
 static void emit_arith_binary(FILE *fp, node_t *node)
 {
     char *inst;
     int size;
 
     assert(node && node->type == NODE_BINARY);
+    if (is_ptr(node->left->ctype)) {
+        emit_ptr_arith_binary(fp, node);
+        return;
+    }
+
     switch (node->binary_op) {
     case '+':
         inst = "add";
@@ -569,9 +612,10 @@ static void emit_assign(FILE *fp, node_t *dst, char *src)
         }
     } else {
         int size = dst->ctype->size;
-        if (dst->type == NODE_VAR)
-            EMIT_INST("mov", size, "%s, -%d(%%rbp)", src, dst->loffset);
-        else {
+        if (dst->type == NODE_VAR) {
+            EMIT_INST("mov", size, "%s, -%d(%%rbp)",
+                    !strcmp(src, "%rax") ? rax[size] : rcx[size], dst->loffset);
+        } else {
             if (!strcmp(src, "%rax")) {
                 PUSH("%%rax");
                 emit(fp, dst->operand);
@@ -884,7 +928,10 @@ static void set_var_offset(vector_t *vars)
         var = vector_get(vars, i);
         assert(var->type == NODE_VAR_DECL);
         size = (var->ctype->size < 8) ? 4 : 8;
-        offset = align(offset + var->ctype->size, size);
+        if (is_array(var->ctype))
+            offset = align(offset + var->ctype->ptr->size * var->ctype->len, size);
+        else
+            offset = align(offset + var->ctype->size, size);
         var->loffset = offset;
     }
 }
@@ -960,6 +1007,9 @@ static void mov_var(FILE *fp, node_t *node, char *reg)
 }
 */
 
+/* TODO:
+ *      error overwrite
+ */
 static void emit_func_call(FILE *fp, node_t *node)
 {
     size_t i;
@@ -1016,6 +1066,8 @@ static void emit_var_decl(FILE *fp, node_t *node)
     else {
         if (is_float(node->ctype))
             EMIT("movs%c   -%d(%%rbp), %%xmm0", (node->ctype == ctype_float) ? 's' : 'd', node->loffset);
+        else if (is_array(node->ctype))
+            EMIT_INST("lea", node->ctype->size, "-%d(%%rbp), %s", node->loffset, rax[node->ctype->size]);
         else
             EMIT_INST("mov", node->ctype->size, "-%d(%%rbp), %s", node->loffset, rax[node->ctype->size]);
     }
@@ -1031,6 +1083,26 @@ static void emit_var_init(FILE *fp, node_t *node)
     } else {
         int size = node->left->ctype->size;
         EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], node->left->loffset);
+    }
+}
+
+static void emit_array_init(FILE *fp, node_t *node)
+{
+    int loffset;
+    int size;
+    size_t i;
+
+    assert(node && node->type == NODE_ARRAY_INIT);
+    node->array->type = NODE_VAR;
+    loffset = node->array->loffset;
+    size = node->array->ctype->ptr->size;
+    for (i = 0; i < vector_len(node->array_init); i++, loffset -= size) {
+        node_t *init = vector_get(node->array_init, i);
+        emit(fp, init);
+        EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], loffset);
+    }
+    for (; i < node->array->ctype->len; i++, loffset -= size) {
+        EMIT_INST("mov", size, "$0, -%d(%%rbp)", loffset);
     }
 }
 
@@ -1050,23 +1122,27 @@ static vector_t *get_local_var(node_t *node)
         if (expr->type == NODE_BINARY && expr->unary_op == ',' && expr->ctype == NULL) {
             /* iterative inorder traversal */
             vector_t *stack = make_vector();
-            while (vector_len(stack) || expr) {
+            while (expr) {
                 if (expr->type == NODE_BINARY) {
                     vector_append(stack, expr);
                     expr = expr->left;
                 } else {
                     if (expr->type == NODE_VAR_INIT)
                         vector_append(vars, expr->left);
+                    else if (expr->type == NODE_ARRAY_INIT)
+                        vector_append(vars, expr->array);
                     else
                         vector_append(vars, expr);
                     expr = vector_len(stack) ? ((node_t *) vector_pop(stack))->right : NULL;
                 }
             }
             free_vector(stack, NULL);
-        } else if (expr->type == NODE_VAR_INIT) {
+        } else if (expr->type == NODE_VAR_INIT)
             vector_append(vars, expr->left);
-        } else if (expr->type == NODE_VAR_DECL)
+        else if (expr->type == NODE_VAR_DECL)
             vector_append(vars, expr);
+        else if (expr->type == NODE_ARRAY_INIT)
+            vector_append(vars, expr->array);
     }
     return vars;
 }
@@ -1089,6 +1165,7 @@ static void emit_return(FILE *fp, node_t *node)
 {
     assert(node && node->type == NODE_RETURN);
     emit(fp, node->expr);
+    emit_ret(fp);
 }
 
 static void emit_cast(FILE *fp, node_t *node)
@@ -1171,6 +1248,9 @@ void emit(FILE *fp, node_t *node)
         break;
     case NODE_VAR_INIT:
         emit_var_init(fp, node);
+        break;
+    case NODE_ARRAY_INIT:
+        emit_array_init(fp, node);
         break;
     case NODE_COMPOUND_STMT:
         emit_compound_stmt(fp, node);

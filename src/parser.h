@@ -12,14 +12,17 @@ enum {
     CTYPE_INT,
     CTYPE_FLOAT,
     CTYPE_DOUBLE,
-    CTYPE_PTR
+    CTYPE_PTR,
+    CTYPE_ARRAY
 };
 
 typedef struct ctype_t {
     int type;
     int size;
-    /* pointer to */
+    /* pointer/array */
     struct ctype_t *ptr;
+    /* array length */
+    int len;
     /* function */
     struct ctype_t *ret;
     /* function parameter types */
@@ -44,6 +47,7 @@ enum {
     NODE_FUNC_CALL,
     NODE_VAR_DECL,
     NODE_VAR_INIT,
+    NODE_ARRAY_INIT,
     NODE_VAR,
     NODE_COMPOUND_STMT,
     NODE_RETURN,
@@ -76,6 +80,11 @@ typedef struct node_t {
                 /* global */
                 char *glabel;
             };
+        };
+        /* array init */
+        struct {
+            struct node_t *array;
+            vector_t *array_init;
         };
         /* unary or postfix++ -- */
         struct {
@@ -134,6 +143,9 @@ extern ctype_t *ctype_char;
 extern ctype_t *ctype_int;
 extern ctype_t *ctype_float;
 extern ctype_t *ctype_double;
+
+bool is_ptr(ctype_t *ctype);
+bool is_array(ctype_t *ctype);
 
 void parser_init(parser_t *parser, lexer_t *lexer);
 node_t *get_node(parser_t *parser);
