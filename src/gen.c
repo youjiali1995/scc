@@ -1099,7 +1099,10 @@ static void emit_array_init(FILE *fp, node_t *node)
     for (i = 0; i < vector_len(node->array_init); i++, loffset -= size) {
         node_t *init = vector_get(node->array_init, i);
         emit(fp, init);
-        EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], loffset);
+        if (is_float(init->ctype))
+            EMIT("movs%c   %%xmm0, -%d(%%rbp)", (init->ctype == ctype_float) ? 's' :'d', loffset);
+        else
+            EMIT_INST("mov", size, "%s, -%d(%%rbp)", rax[size], loffset);
     }
     for (; i < node->array->ctype->len; i++, loffset -= size) {
         EMIT_INST("mov", size, "$0, -%d(%%rbp)", loffset);

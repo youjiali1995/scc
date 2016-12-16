@@ -1304,12 +1304,12 @@ static node_t *parse_initializer(parser_t *parser, node_t *decl)
         errorf("invalid initializer in %s:%d\n", _FILE_, _LINE_);
     do {
         node_t *expr = parse_assign_expr(parser);
-        if (is_arith_type(decl->ctype) && is_arith_type(expr->ctype))
-            expr = conv(decl->ctype, expr);
+        if (is_arith_type(decl->ctype->ptr) && is_arith_type(expr->ctype))
+            expr = conv(decl->ctype->ptr, expr);
         else if (!(is_same_type(decl->ctype->ptr, expr->ctype)
                     || (is_ptr(decl->ctype->ptr) && is_null(expr))))
             errorf("initialization makes %s from %s without a cast in %s:%d\n",
-                    type2str(decl->ctype), type2str(expr->ctype), _FILE_, _LINE_);
+                    type2str(decl->ctype->ptr), type2str(expr->ctype), _FILE_, _LINE_);
         vector_append(init, expr);
     } while (TRY_PUNCT(','));
     EXPECT_PUNCT('}');
