@@ -1,4 +1,9 @@
-# Object files
+test_lexer
+test_parser
+tags
+scc
+
+#Object files
 *.o
 *.ko
 *.obj
