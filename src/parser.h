@@ -25,10 +25,10 @@ typedef struct ctype_t {
     int len;
     /* function */
     struct ctype_t *ret;
-    /* function parameter types */
-    vector_t *param_types;
     /* variable argument lists */
     bool is_va;
+    /* function parameter types */
+    vector_t *param_types;
 } ctype_t;
 
 enum {
@@ -101,9 +101,13 @@ typedef struct node_t {
         struct {
             char *func_name;
             /* save parameters for env when function declaration
-             * save args when functions call */
+             * save args when functions call
+             */
             vector_t *params;
-            struct node_t *func_body;
+            union {
+                struct node_t *func_body;
+                bool is_va;
+            };
         };
         /* if or ternary ? : */
         struct {

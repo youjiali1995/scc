@@ -15,8 +15,11 @@ static char *arg_regs[9][6] = {
 };
 static char *rax[9] = {NULL, "%al", "%ax", NULL, "%eax", NULL, NULL, NULL, "%rax"};
 static char *rcx[9] = {NULL, "%cl", "%cx", NULL, "%ecx", NULL, NULL, NULL, "%rcx"};
+
+#if 0
 static char *caller_saves[] = {"%r10", "%r11", NULL};
 static char *callee_saves[] = {"%rbx", "%r12", "%r13", "%r14", "%r15", NULL};
+#endif
 
 static int offset;
 
@@ -833,7 +836,6 @@ static void emit_if(FILE *fp, node_t *node)
 static void emit_for(FILE *fp, node_t *node)
 {
     char *test, *loop;
-    int prev_offset;
 
     assert(node && node->type == NODE_FOR);
     /*      init;
@@ -845,7 +847,6 @@ static void emit_for(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
-    prev_offset = offset;
     emit(fp, node->for_init);
     test = make_jump_label();
     EMIT("jmp     %s", test);
@@ -853,10 +854,6 @@ static void emit_for(FILE *fp, node_t *node)
     EMIT_LABEL(loop);
     emit(fp, node->for_body);
     emit(fp, node->for_step);
-    if (prev_offset != offset) {
-        EMIT("addq    $%d, %%rsp", offset - prev_offset);
-        offset = prev_offset;
-    }
     EMIT_LABEL(test);
     if (node->for_cond) {
         emit_cmp_0(fp, node->for_cond);
@@ -864,10 +861,10 @@ static void emit_for(FILE *fp, node_t *node)
     } else
         EMIT("jmp     %s", loop);
 }
+
 static void emit_do_while(FILE *fp, node_t *node)
 {
     char *loop;
-    int prev_offset;
 
     assert(node && node->type == NODE_DO_WHILE);
     /* loop:
@@ -875,14 +872,9 @@ static void emit_do_while(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
-    prev_offset = offset;
     loop = make_jump_label();
     EMIT_LABEL(loop);
     emit(fp, node->while_body);
-    if (prev_offset != offset) {
-        EMIT("addq    $%d, %%rsp", offset - prev_offset);
-        offset = prev_offset;
-    }
     emit_cmp_0(fp, node->while_cond);
     EMIT("%s      %s", is_float(node->while_cond->ctype) ? "jp" : "jne", loop);
 }
@@ -890,7 +882,6 @@ static void emit_do_while(FILE *fp, node_t *node)
 static void emit_while(FILE *fp, node_t *node)
 {
     char *loop, *test;
-    int prev_offset;
 
     assert(node && node->type == NODE_WHILE);
     /*      goto test;
@@ -900,16 +891,11 @@ static void emit_while(FILE *fp, node_t *node)
      *      if (cond)
      *          goto loop;
      */
-    prev_offset = offset;
     test = make_jump_label();
     EMIT("jmp     %s", test);
     loop = make_jump_label();
     EMIT_LABEL(loop);
     emit(fp, node->while_body);
-    if (prev_offset != offset) {
-        EMIT("addq    $%d, %%rsp", offset - prev_offset);
-        offset = prev_offset;
-    }
     EMIT_LABEL(test);
     emit_cmp_0(fp, node->while_cond);
     EMIT("%s      %s", is_float(node->while_cond->ctype) ? "jp" : "jne", loop);
@@ -983,7 +969,8 @@ static void emit_func_def(FILE *fp, node_t *node)
     emit_ret(fp);
 }
 
-/* TODO: used to profile
+/* TODO: used to profile */
+#if 0
 static void mov_var(FILE *fp, node_t *node, char *reg)
 {
     int size;
@@ -1005,56 +992,43 @@ static void mov_var(FILE *fp, node_t *node, char *reg)
         EMIT_INST("mov", size, "%s, %s", rax[size], reg);
     }
 }
-*/
+#endif
 
-/* TODO:
- *      error overwrite
- */
 static void emit_func_call(FILE *fp, node_t *node)
 {
-    size_t i;
+    int i;
     int float_idx, int_idx;
-    int order = 0;
+    node_t *arg;
 
     assert(node && node->type == NODE_FUNC_CALL);
-    for (i = float_idx = int_idx = 0; i < vector_len(node->params); i++) {
-        node_t *arg = vector_get(node->params, i);
-        /* Store rcx and xmm0 because they may be modified in following emit */
-        if (!is_float(arg->ctype) && int_idx == 4) {
-            PUSH("%%rcx");
-            order = 1;
-        } else if (is_float(arg->ctype) && float_idx == 1) {
-            PUSH_XMM(0);
-            order = 2;
-        }
+    for (i = vector_len(node->params) - 1; i >= 0; i--)  {
+        arg = vector_get(node->params, i);
         emit(fp, arg);
-        if (is_float(arg->ctype)) {
-            char suffix = (arg->ctype == ctype_float) ? 's' : 'd';
-            EMIT("movs%c   %%xmm0, %%xmm%d", suffix, float_idx++);
-        } else {
-            int size = arg->ctype->size;
-            EMIT_INST("mov", size, "%s, %s", rax[size], arg_regs[size][int_idx++]);
-        }
+        if (is_float(arg->ctype))
+            PUSH_XMM(0);
+        else
+            PUSH("%%rax");
+    }
+    for (i = float_idx = int_idx = 0; i < vector_len(node->params); i++) {
+        arg = vector_get(node->params, i);
+        if (is_float(arg->ctype))
+            POP_XMM(float_idx++);
+        else
+            POP("%s", arg_regs[8][int_idx++]);
     }
 
-    if (order == 1) {
-        POP("%%rcx");
-        if (float_idx > 1)
-            POP_XMM(0);
-    } else if (order == 2) {
-        POP_XMM(0);
-        if (int_idx > 4)
-            POP("%%rcx");
-    }
-    if (node->ctype->is_va)
+    if (node->is_va)
         EMIT_INST("mov", 4, "$%d, %s", float_idx, rax[4]);
     /* size of stack frame is times of 16 bytes */
     if (offset % 16 != 0) {
-        int temp = offset;
-        offset = align(offset, 16);
-        EMIT("subq    $%d, %%rsp", offset - temp);
+        int temp;
+        temp = align(offset, 16);
+        EMIT("subq    $%d, %%rsp", temp - offset);
+        EMIT("call    %s", node->func_name);
+        EMIT("addq    $%d, %%rsp", temp - offset);
     }
-    EMIT("call    %s", node->func_name);
+    else
+        EMIT("call    %s", node->func_name);
 }
 
 static void emit_var_decl(FILE *fp, node_t *node)
@@ -1162,6 +1136,10 @@ static void emit_compound_stmt(FILE *fp, node_t *node)
         EMIT("subq    $%d, %%rsp", offset - prev_offset);
     for (i = 0; i < vector_len(node->stmts); i++)
         emit(fp, vector_get(node->stmts, i));
+    if (offset != prev_offset) {
+        EMIT("addq    $%d, %%rsp", offset - prev_offset);
+        offset = prev_offset;
+    }
 }
 
 static void emit_return(FILE *fp, node_t *node)

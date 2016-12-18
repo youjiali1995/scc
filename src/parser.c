@@ -197,7 +197,7 @@ static char *punct2str(int punct)
 /************************** type constructors *************************/
 #define NEW_TYPE(ctype, tp, sz) \
     do { \
-        (ctype) = calloc(1, sizeof(*ctype)); \
+        (ctype) = calloc(1, sizeof(ctype_t)); \
         (ctype)->type = (tp); \
         (ctype)->size = (sz); \
     } while (0)
@@ -224,7 +224,7 @@ static ctype_t *make_array(ctype_t *p, int len)
 /*************************** node constructors **********************************/
 #define NEW_NODE(node, tp) \
     do { \
-        (node) = malloc(sizeof(*(node))); \
+        (node) = calloc(1, sizeof(node_t)); \
         (node)->type = tp; \
     } while (0)
 
@@ -265,7 +265,7 @@ static node_t *make_func_call(ctype_t *ctype, char *func_name, vector_t *args)
 
     NEW_NODE(node, NODE_FUNC_CALL);
     node->ctype = ctype->ret;
-    node->ctype->is_va = ctype->is_va;
+    node->is_va = ctype->is_va;
     node->func_name = func_name;
     node->params = args;
     return node;
@@ -548,8 +548,6 @@ static vector_t *parse_arg_expr_list(parser_t *parser, node_t *func)
     /* TODO: refactoring variable argument list */
     if (func->ctype->is_va && TRY_PUNCT(',')) {
         for (;;) {
-            if (is_punct(PEEK(), ',') || is_punct(PEEK(), ')') || is_punct(PEEK(), ';'))
-                errorf("expected expression before \'%c\' token in %s:%d\n", PEEK()->ival, _FILE_, _LINE_);
             node_t *arg = parse_assign_expr(parser);
             /* varaiable argument function converts float type arg to double; */
             if (arg->ctype == ctype_float)
@@ -604,10 +602,12 @@ static node_t *parse_postfix_expr(parser_t *parser)
             else
                 post = make_binary(post->ctype, '+', post, expr);
             post = make_unary(post->ctype->ptr, '*', post);
+
         } else if (is_punct(token, '.'))
             errorf("TODO: struct or union in %s:%d\n", _FILE_, _LINE_);
         else if (is_punct(token, PUNCT_ARROW))
             errorf("TODO: struct or union in %s:%d\n", _FILE_, _LINE_);
+
         else if (is_punct(token, PUNCT_INC) || is_punct(token, PUNCT_DEC)) {
             if (!is_lvalue(post))
                 errorf("lvalue required as unary \'%s\' operand in %s:%d\n",
@@ -1246,13 +1246,22 @@ static node_t *parse_declarator(parser_t *parser, ctype_t *ctype)
     for (n = 0; TRY_PUNCT('*'); n++)
         ;
     node = parse_direct_decl(parser, ctype);
-    ctype = (node->type == NODE_VAR_DECL) ? node->ctype : node->ctype->ret;
+    if (node->type == NODE_VAR_DECL)
+        ctype = is_array(node->ctype) ? node->ctype->ptr : node->ctype;
+    else
+        ctype = node->ctype->ret;
     while (n-- > 0)
         ctype = make_ptr(ctype);
     if (node->type == NODE_VAR_DECL) {
-        if (ctype == ctype_void)
-            errorf("variable \'%s\' declared void in %s:%d\n", node->varname, _FILE_, _LINE_);
-        node->ctype = ctype;
+        if (is_array(node->ctype)) {
+            if (ctype == ctype_void)
+                errorf("declaration of \'%s\' as array of voids in %s:%d\n", node->varname, _FILE_, _LINE_);
+            node->ctype->ptr = ctype;
+        } else {
+            if (ctype == ctype_void)
+                errorf("variable \'%s\' declared void in %s:%d\n", node->varname, _FILE_, _LINE_);
+            node->ctype = ctype;
+        }
     } else
         node->ctype->ret = ctype;
     return node;

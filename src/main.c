@@ -34,7 +34,7 @@ void compile(const char *fname, FILE *in)
     FILE *out;
 
     ast = make_vector();
-    out = in == stdin ? stdout : fopen_out(fname);
+    out = (in == stdin) ? stdout : fopen_out(fname);
 
     lexer_init(&lexer, fname, in);
     parser_init(&parser, &lexer);
@@ -58,7 +58,7 @@ int main(int argc, char *argv[])
         compile("stdin", stdin);
     else
         for (i = 1; i < argc; i++)
-            compile(argv[i], NULL);
+            compile(argv[i], fopen(argv[i], "r"));
 
     return 0;
 }
