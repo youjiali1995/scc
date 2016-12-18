@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <libgen.h>
 #include "vector.h"
 #include "lexer.h"
 #include "parser.h"
@@ -9,16 +10,19 @@
 
 FILE *fopen_out(const char *fname)
 {
+    char *in;
     char *out;
     FILE *fp;
     size_t len = strlen(fname);
 
     if (len < 3 || fname[len - 1] != 'c' || fname[len - 2] != '.')
         errorf("filename suffix is not .c: %s\n", fname);
-    out = strdup(fname);
+    in = strdup(fname);
+    out = basename(in);
+    len = strlen(out);
     out[len - 1] = 's';
     fp = fopen(out, "w");
-    free(out);
+    free(in);
     if (!fp)
         errorf("Can't open file %s to write\n", out);
     return fp;
