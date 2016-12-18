@@ -1,8 +1,7 @@
 ﻿# scc
 
-自学《编译器设计》后写的一个简单的C编译器s(simple)cc。
+自学《编译器设计》后写的一个简单的C编译器 s(simple)cc。
 
------------------
 
 ## 前端
 词法分析得到词素流后进行基础的递归下降语法分析得到AST。
@@ -40,11 +39,11 @@ $ ./scc test/nqueen.c
 ```
 
 ## 例子
-1. ![test/heart.c](https://github.com/zlwgx/scc/blob/master/test/heart.c)
+1. [test/heart.c](https://github.com/zlwgx/scc/blob/master/test/heart.c)
 
 ![image](https://github.com/zlwgx/scc/blob/master/doc/heart.png)
 
-2. ![test/nqueen.c](https://github.com/zlwgx/scc/blob/master/test/nqueen.c)
+2. [test/nqueen.c](https://github.com/zlwgx/scc/blob/master/test/nqueen.c)
 
 ![image](https://github.com/zlwgx/scc/blob/master/doc/nqueen.png)
 
