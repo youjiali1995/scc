@@ -1026,8 +1026,7 @@ static void emit_func_call(FILE *fp, node_t *node)
         EMIT("subq    $%d, %%rsp", temp - offset);
         EMIT("call    %s", node->func_name);
         EMIT("addq    $%d, %%rsp", temp - offset);
-    }
-    else
+    } else
         EMIT("call    %s", node->func_name);
 }
 
