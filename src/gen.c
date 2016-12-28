@@ -913,7 +913,7 @@ static void set_var_offset(vector_t *vars)
     for (i = 0; i < vector_len(vars); i++) {
         var = vector_get(vars, i);
         assert(var->type == NODE_VAR_DECL);
-        size = (var->ctype->size < 8) ? 4 : 8;
+        size = var->ctype->size;
         if (is_array(var->ctype))
             offset = align(offset + var->ctype->ptr->size * var->ctype->len, size);
         else
