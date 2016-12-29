@@ -920,6 +920,7 @@ static void set_var_offset(vector_t *vars)
             offset = align(offset + var->ctype->size, size);
         var->loffset = offset;
     }
+    offset = align(offset, 8);
 }
 
 static void emit_func_prologue(FILE *fp, node_t *node)
